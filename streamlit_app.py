@@ -322,18 +322,27 @@ with tab2:
     col1, col2 = st.columns(2)
 
     with col1:
-        st.write("**Delete by Target Field**")
-        available_targets = get_unique_targets()
-        targets_to_delete = st.multiselect(
-            "Select target fields to delete all associated mappings",
-            options=available_targets
+        st.write("**Delete by Source Field**")
+        # Get unique source fields, excluding those where SRC == TARGET (base mappings)
+        if st.session_state.mappings_data is not None:
+            # Filter out rows where SRC equals TARGET (these are base mappings that shouldn't be deleted)
+            deletable_sources = st.session_state.mappings_data[
+                st.session_state.mappings_data['SRC'] != st.session_state.mappings_data['TARGET']
+            ]['SRC'].unique().tolist()
+            deletable_sources.sort()
+        else:
+            deletable_sources = []
+        
+        sources_to_delete = st.multiselect(
+            "Select source fields to delete (base mappings where SRC=TARGET are protected)",
+            options=deletable_sources
         )
         
-        if st.button("🗑️ Delete Selected Targets", type="secondary"):
-            if targets_to_delete and st.session_state.mappings_data is not None:
+        if st.button("🗑️ Delete Selected Sources", type="secondary"):
+            if sources_to_delete and st.session_state.mappings_data is not None:
                 original_count = len(st.session_state.mappings_data)
                 st.session_state.mappings_data = st.session_state.mappings_data[
-                    ~st.session_state.mappings_data['TARGET'].isin(targets_to_delete)
+                    ~st.session_state.mappings_data['SRC'].isin(sources_to_delete)
                 ]
                 deleted_count = original_count - len(st.session_state.mappings_data)
                 st.session_state.changes_made = True
