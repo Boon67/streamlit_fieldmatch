@@ -1,0 +1,14 @@
+definition_version: 2
+
+entities:
+  claimsiq_app:
+    type: streamlit
+    identifier:
+      name: CLAIMSIQ_APP
+    title: "ClaimsIQ"
+    query_warehouse: <% ctx.env.SNOWFLAKE_WAREHOUSE %>
+    main_file: streamlit_app.py
+    stage: STREAMLIT_STAGE
+    artifacts:
+      - streamlit_app.py
+      - environment.yml

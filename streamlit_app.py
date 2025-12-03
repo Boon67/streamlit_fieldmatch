@@ -1,0 +1,1201 @@
+# Healthcare Field Mappings Manager
+import streamlit as st
+import pandas as pd
+from snowflake.snowpark.context import get_active_session
+
+# Initialize Snowflake session
+session = get_active_session()
+
+st.title("ClaimsIQ 🏥")
+st.write("Healthcare claims field mapping and data processing")
+
+# Create tabs
+tab1, tab2, tab3 = st.tabs(["📤 Upload & Map File", "📝 Edit Mappings", "🔍 Test Matches"])
+
+# Initialize session state for data management
+if 'mappings_data' not in st.session_state:
+    st.session_state.mappings_data = None
+if 'changes_made' not in st.session_state:
+    st.session_state.changes_made = False
+
+def load_mappings_data():
+    """Load current mappings data from Snowflake"""
+    try:
+        df = session.sql("SELECT SRC, TARGET FROM PROCESSOR.mappings_list ORDER BY TARGET, SRC").to_pandas()
+        return df
+    except Exception as e:
+        st.error(f"Error loading data: {str(e)}")
+        return pd.DataFrame(columns=['SRC', 'TARGET'])
+
+def get_unique_targets():
+    """Get list of unique target field names"""
+    try:
+        targets = session.sql("SELECT DISTINCT TARGET FROM PROCESSOR.mappings_list ORDER BY TARGET").to_pandas()
+        return targets['TARGET'].tolist()
+    except Exception as e:
+        st.error(f"Error loading target fields: {str(e)}")
+        return []
+
+def save_changes(updated_df, original_df):
+    """Save changes to Snowflake table"""
+    try:
+        # Find records to delete (in original but not in updated)
+        original_pairs = set(zip(original_df['SRC'], original_df['TARGET']))
+        updated_pairs = set(zip(updated_df['SRC'], updated_df['TARGET']))
+        
+        to_delete = original_pairs - updated_pairs
+        to_insert = updated_pairs - original_pairs
+        
+        # Delete removed records
+        for src, target in to_delete:
+            # Use parameterized queries to prevent SQL injection
+            delete_sql = "DELETE FROM PROCESSOR.mappings_list WHERE SRC = ? AND TARGET = ?"
+            session.sql(delete_sql, params=[src, target]).collect()
+        
+        # Insert new records
+        for src, target in to_insert:
+            insert_sql = "INSERT INTO PROCESSOR.mappings_list (SRC, TARGET) VALUES (?, ?)"
+            session.sql(insert_sql, params=[src, target]).collect()
+        
+        return True, len(to_delete), len(to_insert)
+    except Exception as e:
+        return False, 0, 0, str(e)
+
+def test_field_matches(field_list, top_n=3, min_threshold=0.1):
+    """Test field matches using the stored procedure"""
+    try:
+        # Escape single quotes in field names
+        escaped_fields = [field.replace("'", "''") for field in field_list]
+        formatted_fields = "['" + "', '".join(escaped_fields) + "']"
+        
+        # Call the stored procedure with full schema path
+        sql_query = f"""
+        CALL CLAIMSIQ.PROCESSOR.field_matcher_advanced(
+            {formatted_fields}, 
+            {top_n}, 
+            {min_threshold}
+        )
+        """
+        
+        result = session.sql(sql_query).to_pandas()
+        return result, None
+    except Exception as e:
+        return None, str(e)
+
+def normalize_column_names(df):
+    """Normalize column names from stored procedure results"""
+    if df is None or len(df) == 0:
+        return df
+    
+    # Expected column order from the stored procedure:
+    # input_field, src_field, target_field, combined_score, exact_score, 
+    # substring_score, sequence_score, word_overlap, tfidf_score, match_rank
+    expected_columns = [
+        'INPUT_FIELD', 'SRC_FIELD', 'TARGET_FIELD', 'COMBINED_SCORE', 
+        'EXACT_SCORE', 'SUBSTRING_SCORE', 'SEQUENCE_SCORE', 'WORD_OVERLAP', 
+        'TFIDF_SCORE', 'MATCH_RANK'
+    ]
+    
+    # First, strip quotes from column names (Snowflake sometimes returns '"COLUMN_NAME"')
+    new_columns = []
+    for col in df.columns:
+        col_str = str(col).strip('"\'').upper()
+        new_columns.append(col_str)
+    df.columns = new_columns
+    
+    # Check if columns are numeric indices (0, 1, 2...) - this happens with some stored procedure results
+    if len(df.columns) > 0 and (df.columns[0] == '0' or str(df.columns[0]).isdigit()):
+        # Map by position
+        if len(df.columns) == len(expected_columns):
+            df.columns = expected_columns
+            return df
+        else:
+            # Try to map as many as we can
+            pos_columns = []
+            for i, col in enumerate(df.columns):
+                if i < len(expected_columns):
+                    pos_columns.append(expected_columns[i])
+                else:
+                    pos_columns.append(f'COL_{i}')
+            df.columns = pos_columns
+            return df
+    
+    # Map column names to expected format (already uppercase from above)
+    column_mapping = {}
+    for col in df.columns:
+        if col == 'INPUT_FIELD':
+            column_mapping[col] = 'INPUT_FIELD'
+        elif col == 'SRC_FIELD':
+            column_mapping[col] = 'SRC_FIELD'
+        elif col == 'TARGET_FIELD':
+            column_mapping[col] = 'TARGET_FIELD'
+        elif col == 'COMBINED_SCORE':
+            column_mapping[col] = 'COMBINED_SCORE'
+        elif col == 'EXACT_SCORE':
+            column_mapping[col] = 'EXACT_SCORE'
+        elif col == 'SUBSTRING_SCORE':
+            column_mapping[col] = 'SUBSTRING_SCORE'
+        elif col == 'SEQUENCE_SCORE':
+            column_mapping[col] = 'SEQUENCE_SCORE'
+        elif col == 'WORD_OVERLAP':
+            column_mapping[col] = 'WORD_OVERLAP'
+        elif col == 'TFIDF_SCORE':
+            column_mapping[col] = 'TFIDF_SCORE'
+        elif col == 'MATCH_RANK':
+            column_mapping[col] = 'MATCH_RANK'
+    
+    # Rename columns to standardized uppercase names
+    df_renamed = df.rename(columns=column_mapping)
+    
+    return df_renamed
+
+# TAB 2: Edit Mappings
+with tab2:
+    # Load data button
+    col1, col2, col3 = st.columns([1, 1, 2])
+
+    with col1:
+        if st.button("🔄 Load Data", type="primary"):
+            st.session_state.mappings_data = load_mappings_data()
+            st.session_state.changes_made = False
+            st.rerun()
+
+    with col2:
+        if st.button("💾 Save Changes", disabled=not st.session_state.changes_made):
+            if st.session_state.mappings_data is not None and st.session_state.changes_made:
+                original_data = load_mappings_data()
+                result = save_changes(st.session_state.mappings_data, original_data)
+                if result[0]:
+                    st.success(f"✅ Changes saved! Deleted: {result[1]}, Added: {result[2]} records")
+                    st.session_state.changes_made = False
+                    st.session_state.mappings_data = load_mappings_data()
+                    st.rerun()
+                else:
+                    st.error(f"❌ Error saving changes: {result[3] if len(result) > 3 else 'Unknown error'}")
+
+    # Load initial data if not loaded
+    if st.session_state.mappings_data is None:
+        st.session_state.mappings_data = load_mappings_data()
+
+    # Display current data
+    if st.session_state.mappings_data is not None and len(st.session_state.mappings_data) > 0:
+        st.subheader("Current Mappings")
+        
+        # Group by target field for better organization
+        targets = st.session_state.mappings_data['TARGET'].unique()
+        
+        # Filter options
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            selected_targets = st.multiselect(
+                "Filter by Target Fields (leave empty to show all)",
+                options=sorted(targets),
+                default=[]
+            )
+        
+        with col2:
+            search_term = st.text_input("🔍 Search Source Fields", placeholder="Enter search term...")
+        
+        # Filter data
+        filtered_data = st.session_state.mappings_data.copy()
+        if selected_targets:
+            filtered_data = filtered_data[filtered_data['TARGET'].isin(selected_targets)]
+        if search_term:
+            filtered_data = filtered_data[
+                filtered_data['SRC'].str.contains(search_term, case=False, na=False)
+            ]
+        
+        # Display data with editing capabilities
+        st.write(f"Showing {len(filtered_data)} of {len(st.session_state.mappings_data)} total mappings")
+        
+        # Create editable dataframe
+        edited_data = st.data_editor(
+            filtered_data,
+            use_container_width=True,
+            num_rows="dynamic",  # Allow adding/deleting rows
+            column_config={
+                "SRC": st.column_config.TextColumn(
+                    "Source Field Name",
+                    help="The original field name from source systems",
+                    required=True
+                ),
+                "TARGET": st.column_config.SelectboxColumn(
+                    "Target Field Name",
+                    help="Standardized healthcare field name",
+                    options=get_unique_targets(),
+                    required=True
+                )
+            },
+            key="data_editor"
+        )
+        
+        # Check if changes were made
+        if not edited_data.equals(filtered_data):
+            st.session_state.changes_made = True
+            # Update the main data with changes (merge with unfiltered data)
+            if search_term or selected_targets:
+                # If filtering is active, we need to merge changes back to main dataset
+                main_data = st.session_state.mappings_data.copy()
+                # Remove old filtered records
+                if selected_targets:
+                    main_data = main_data[~main_data['TARGET'].isin(selected_targets)]
+                if search_term:
+                    main_data = main_data[~main_data['SRC'].str.contains(search_term, case=False, na=False)]
+                # Add back edited records
+                st.session_state.mappings_data = pd.concat([main_data, edited_data], ignore_index=True)
+            else:
+                st.session_state.mappings_data = edited_data
+        
+        # Display summary statistics
+        st.subheader("📊 Summary Statistics")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Total Mappings", len(st.session_state.mappings_data))
+        
+        with col2:
+            st.metric("Unique Target Fields", len(st.session_state.mappings_data['TARGET'].unique()))
+        
+        with col3:
+            st.metric("Unique Source Fields", len(st.session_state.mappings_data['SRC'].unique()))
+
+    else:
+        st.info("No data loaded. Click 'Load Data' to begin editing.")
+
+    # Add new mapping section
+    st.subheader("➕ Add New Mapping")
+
+    with st.form("add_mapping_form"):
+        col1, col2, col3 = st.columns([2, 2, 1])
+        
+        with col1:
+            new_src = st.text_input("New Source Field Name", placeholder="e.g., Patient_Name")
+        
+        with col2:
+            available_targets = get_unique_targets()
+            if available_targets:
+                new_target = st.selectbox("Target Field Name", options=available_targets)
+            else:
+                new_target = None
+                st.warning("No target fields available. Please load data first.")
+        
+        with col3:
+            st.write("")  # Spacing
+            add_button = st.form_submit_button("Add Mapping", type="primary")
+        
+        if add_button and new_src and new_target:
+            # Check if mapping already exists
+            if st.session_state.mappings_data is not None:
+                existing = st.session_state.mappings_data[
+                    (st.session_state.mappings_data['SRC'] == new_src) & 
+                    (st.session_state.mappings_data['TARGET'] == new_target)
+                ]
+                
+                if len(existing) > 0:
+                    st.error("❌ This mapping already exists!")
+                else:
+                    # Add new mapping
+                    new_row = pd.DataFrame({'SRC': [new_src], 'TARGET': [new_target]})
+                    st.session_state.mappings_data = pd.concat([st.session_state.mappings_data, new_row], ignore_index=True)
+                    st.session_state.changes_made = True
+                    st.success(f"✅ Added mapping: {new_src} → {new_target}")
+                    st.rerun()
+            else:
+                st.error("❌ Please load data first before adding mappings.")
+
+    # Bulk operations
+    st.subheader("🔧 Bulk Operations")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write("**Delete by Target Field**")
+        available_targets = get_unique_targets()
+        targets_to_delete = st.multiselect(
+            "Select target fields to delete all associated mappings",
+            options=available_targets
+        )
+        
+        if st.button("🗑️ Delete Selected Targets", type="secondary"):
+            if targets_to_delete and st.session_state.mappings_data is not None:
+                original_count = len(st.session_state.mappings_data)
+                st.session_state.mappings_data = st.session_state.mappings_data[
+                    ~st.session_state.mappings_data['TARGET'].isin(targets_to_delete)
+                ]
+                deleted_count = original_count - len(st.session_state.mappings_data)
+                st.session_state.changes_made = True
+                st.success(f"✅ Deleted {deleted_count} mappings")
+                st.rerun()
+
+    with col2:
+        st.write("**Export Data**")
+        if st.session_state.mappings_data is not None:
+            csv_data = st.session_state.mappings_data.to_csv(index=False)
+            st.download_button(
+                label="📥 Download as CSV",
+                data=csv_data,
+                file_name="healthcare_field_mappings.csv",
+                mime="text/csv"
+            )
+
+    # Warning about unsaved changes
+    if st.session_state.changes_made:
+        st.warning("⚠️ You have unsaved changes! Click 'Save Changes' to persist your edits to Snowflake.")
+
+# TAB 3: Test Matches
+with tab3:
+    st.subheader("🔍 Test Field Matching Algorithm")
+    st.write("Test how well the field matching algorithm performs on your field names")
+    
+    # Configuration section
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.write("**Field Names to Test**")
+        # Text area for bulk input
+        field_input = st.text_area(
+            "Enter field names (one per line):",
+            placeholder="Patient Name\nBirth Date\nPolicy Start Date\ntotal_amt\nDiagnosis Code\nProvider NPI",
+            height=150,
+            help="Enter each field name on a separate line"
+        )
+        
+        if 'test_fields' not in st.session_state:
+            st.session_state.test_fields = []
+        
+        col_a, col_b = st.columns([3, 1])
+        with col_a:
+            new_field = st.text_input("Add field name:", placeholder="e.g., Patient_DOB", key="new_field_input")
+        with col_b:
+            if st.button("➕ Add") and new_field:
+                if new_field not in st.session_state.test_fields:
+                    st.session_state.test_fields.append(new_field)
+                    st.rerun()
+        
+        # Display current test fields
+        if st.session_state.test_fields:
+            st.write("**Current test fields:**")
+            for i, field in enumerate(st.session_state.test_fields):
+                col_x, col_y = st.columns([4, 1])
+                with col_x:
+                    st.write(f"• {field}")
+                with col_y:
+                    if st.button("🗑️", key=f"remove_{i}", help=f"Remove {field}"):
+                        st.session_state.test_fields.remove(field)
+                        st.rerun()
+    
+    with col2:
+        st.write("**Algorithm Parameters**")
+        
+        top_n = st.slider(
+            "Number of matches per field",
+            min_value=1,
+            max_value=10,
+            value=3,
+            help="How many top matches to return for each input field"
+        )
+        
+        min_threshold = st.slider(
+            "Minimum confidence threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.1,
+            step=0.05,
+            help="Minimum similarity score to include in results"
+        )
+        
+        st.write("**Quick Test Examples**")
+        example_sets = {
+            "Healthcare Common": ["Patient Name", "DOB", "Policy Number", "Claim Amount", "Provider ID"],
+            "Variations & Typos": ["Patien_Name", "Birth_Dt", "Plcy_Start", "Tot_Amt", "Diag_Code"],
+            "Abbreviations": ["Pt_Name", "DOB", "Pol_Eff", "Billed_Amt", "NPI"]
+        }
+        
+        for name, fields in example_sets.items():
+            if st.button(f"Load: {name}", key=f"load_{name}"):
+                st.session_state.test_fields = fields
+                st.rerun()
+        
+        if st.button("🗑️ Clear All", type="secondary"):
+            st.session_state.test_fields = []
+            st.rerun()
+    
+    # Prepare field list
+    test_field_list = []
+    
+    # Add fields from text area
+    if field_input.strip():
+        text_fields = [line.strip() for line in field_input.split('\n') if line.strip()]
+        test_field_list.extend(text_fields)
+    
+    # Add fields from manual input
+    test_field_list.extend(st.session_state.test_fields)
+    
+    # Remove duplicates while preserving order
+    test_field_list = list(dict.fromkeys(test_field_list))
+    
+    # Test execution
+    st.write("---")
+    
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        if test_field_list:
+            st.write(f"**Ready to test {len(test_field_list)} field names**")
+            for field in test_field_list:
+                st.write(f"• {field}")
+    
+    with col2:
+        test_button = st.button(
+            "🚀 Run Field Matching Test", 
+            type="primary",
+            disabled=len(test_field_list) == 0
+        )
+    
+    with col3:
+        if test_field_list:
+            # Show SQL that would be executed
+            escaped_fields = [field.replace("'", "''") for field in test_field_list]
+            formatted_fields = "['" + "', '".join(escaped_fields) + "']"
+            sql_preview = f"""CALL CLAIMSIQ.PROCESSOR.field_matcher_advanced(
+    {formatted_fields},
+    {top_n},
+    {min_threshold}
+);"""
+            
+            with st.expander("📄 View SQL"):
+                st.code(sql_preview, language="sql")
+    
+    # Execute test
+    if test_button and test_field_list:
+        with st.spinner("Running field matching algorithm..."):
+            result_df, error = test_field_matches(test_field_list, top_n, min_threshold)
+        
+        if error:
+            st.error(f"❌ Error executing test: {error}")
+        elif result_df is not None and len(result_df) > 0:
+            # Normalize column names
+            result_df = normalize_column_names(result_df)
+            
+            # Verify we have the essential columns
+            required_cols = ['INPUT_FIELD', 'TARGET_FIELD', 'COMBINED_SCORE']
+            missing_cols = [col for col in required_cols if col not in result_df.columns]
+            
+            if missing_cols:
+                st.error(f"❌ Missing required columns: {missing_cols}")
+                st.write("**Available columns:**", result_df.columns.tolist())
+                st.write("**Raw data sample:**")
+                st.dataframe(result_df.head())
+            else:
+                st.success(f"✅ Test completed! Found {len(result_df)} matches")
+                
+                # Display results
+                st.subheader("📊 Matching Results")
+                
+                # Results summary
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("Total Matches", len(result_df))
+                
+                with col2:
+                    high_conf = len(result_df[result_df['COMBINED_SCORE'] >= 0.8])
+                    st.metric("High Confidence (≥0.8)", high_conf)
+                
+                with col3:
+                    med_conf = len(result_df[(result_df['COMBINED_SCORE'] >= 0.5) & (result_df['COMBINED_SCORE'] < 0.8)])
+                    st.metric("Medium Confidence (0.5-0.8)", med_conf)
+                
+                with col4:
+                    low_conf = len(result_df[result_df['COMBINED_SCORE'] < 0.5])
+                    st.metric("Low Confidence (<0.5)", low_conf)
+                
+                # Format results for better display
+                display_df = result_df.copy()
+                
+                # Add confidence level column
+                def get_confidence_level(score):
+                    if score >= 0.8:
+                        return "🟢 High"
+                    elif score >= 0.5:
+                        return "🟡 Medium"
+                    else:
+                        return "🔴 Low"
+                
+                display_df['CONFIDENCE_LEVEL'] = display_df['COMBINED_SCORE'].apply(get_confidence_level)
+                
+                # Round scores for display (only if columns exist)
+                score_columns = ['COMBINED_SCORE', 'EXACT_SCORE', 'SUBSTRING_SCORE', 'SEQUENCE_SCORE', 'WORD_OVERLAP', 'TFIDF_SCORE']
+                existing_score_cols = [col for col in score_columns if col in display_df.columns]
+                for col in existing_score_cols:
+                    display_df[col] = display_df[col].round(3)
+                
+                # Create column config dynamically based on available columns
+                column_config = {
+                    "INPUT_FIELD": "Input Field",
+                    "SRC_FIELD": "Matched Source",
+                    "TARGET_FIELD": "Target Field",
+                    "COMBINED_SCORE": st.column_config.NumberColumn("Combined Score", format="%.3f"),
+                    "CONFIDENCE_LEVEL": "Confidence"
+                }
+                
+                # Add optional columns if they exist
+                optional_configs = {
+                    "MATCH_RANK": "Rank",
+                    "EXACT_SCORE": st.column_config.NumberColumn("Exact", format="%.3f"),
+                    "SUBSTRING_SCORE": st.column_config.NumberColumn("Substring", format="%.3f"),
+                    "SEQUENCE_SCORE": st.column_config.NumberColumn("Sequence", format="%.3f"),
+                    "WORD_OVERLAP": st.column_config.NumberColumn("Word Overlap", format="%.3f"),
+                    "TFIDF_SCORE": st.column_config.NumberColumn("TF-IDF", format="%.3f")
+                }
+                
+                for col, config in optional_configs.items():
+                    if col in display_df.columns:
+                        column_config[col] = config
+                
+                # Display results table
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    column_config=column_config
+                )
+                
+                # Download results
+                csv_results = result_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Results as CSV",
+                    data=csv_results,
+                    file_name=f"field_matching_results_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+                
+                # Analysis insights
+                st.subheader("💡 Analysis Insights")
+                
+                # Group by input field to show best matches
+                best_matches = result_df.loc[result_df.groupby('INPUT_FIELD')['COMBINED_SCORE'].idxmax()]
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**Best Matches Summary:**")
+                    for _, row in best_matches.iterrows():
+                        confidence = "🟢" if row['COMBINED_SCORE'] >= 0.8 else "🟡" if row['COMBINED_SCORE'] >= 0.5 else "🔴"
+                        st.write(f"{confidence} `{row['INPUT_FIELD']}` → `{row['TARGET_FIELD']}` ({row['COMBINED_SCORE']:.3f})")
+                
+                with col2:
+                    st.write("**Recommendations:**")
+                    low_matches = best_matches[best_matches['COMBINED_SCORE'] < 0.5]
+                    if len(low_matches) > 0:
+                        st.write("🔴 **Fields needing attention:**")
+                        for _, row in low_matches.iterrows():
+                            st.write(f"• `{row['INPUT_FIELD']}` (score: {row['COMBINED_SCORE']:.3f})")
+                        st.write("Consider adding these as new source mappings or checking for typos.")
+                    else:
+                        st.write("✅ All fields have good matches!")
+                        st.write("The algorithm performed well on your test data.")
+        
+        else:
+            st.warning("⚠️ No matches found. Try lowering the minimum threshold or check your field names.")
+    
+    elif not test_field_list:
+        st.info("👆 Enter some field names above to test the matching algorithm")
+
+# TAB 1: Upload & Map File
+with tab1:
+    st.subheader("📤 Upload & Map File to Target Schema")
+    st.write("Upload a data file, map its columns to the target schema, and create a new table")
+    
+    # Initialize session state for file mapping workflow
+    if 'upload_step' not in st.session_state:
+        st.session_state.upload_step = 1  # 1=upload, 2=map, 3=review, 4=complete
+    if 'uploaded_file_data' not in st.session_state:
+        st.session_state.uploaded_file_data = None
+    if 'uploaded_file_name' not in st.session_state:
+        st.session_state.uploaded_file_name = None
+    if 'column_mappings' not in st.session_state:
+        st.session_state.column_mappings = {}
+    if 'auto_mappings' not in st.session_state:
+        st.session_state.auto_mappings = {}
+    
+    def reset_upload_workflow():
+        """Reset the upload workflow to start fresh"""
+        st.session_state.upload_step = 1
+        st.session_state.uploaded_file_data = None
+        st.session_state.uploaded_file_name = None
+        st.session_state.column_mappings = {}
+        st.session_state.auto_mappings = {}
+        st.session_state.auto_mappings_sql = None
+        st.session_state.auto_mappings_raw_result = None
+    
+    def get_auto_mappings(source_columns, show_debug=False):
+        """Get automatic mapping suggestions for source columns using field_matcher_advanced"""
+        try:
+            if not source_columns:
+                return {}, None, None
+            
+            # Escape single quotes in field names
+            escaped_fields = [field.replace("'", "''") for field in source_columns]
+            formatted_fields = "['" + "', '".join(escaped_fields) + "']"
+            
+            # Call the stored procedure to get best matches (top 1 match per field)
+            # Use fully qualified name: DATABASE.SCHEMA.PROCEDURE
+            sql_query = f"""CALL CLAIMSIQ.PROCESSOR.field_matcher_advanced(
+    {formatted_fields}, 
+    1, 
+    0.1
+)"""
+            
+            result = session.sql(sql_query).to_pandas()
+            raw_result = result.copy() if result is not None else None
+            result = normalize_column_names(result)
+            
+            # Create mapping dictionary - use TARGET_FIELD as the suggested mapping
+            mappings = {}
+            if result is not None and len(result) > 0:
+                # Check for required columns
+                if 'INPUT_FIELD' in result.columns and 'TARGET_FIELD' in result.columns:
+                    for _, row in result.iterrows():
+                        input_field = str(row['INPUT_FIELD'])
+                        target_field = str(row['TARGET_FIELD'])
+                        score = row.get('COMBINED_SCORE', 0)
+                        src_field = str(row.get('SRC_FIELD', ''))
+                        
+                        # Store the mapping with target field and confidence score
+                        # Use exact input field name as key
+                        mappings[input_field] = {
+                            'target': target_field,
+                            'score': float(score) if score else 0.0,
+                            'src_match': src_field
+                        }
+                        
+                        # Also store with lowercase key for case-insensitive lookup
+                        mappings[input_field.lower()] = {
+                            'target': target_field,
+                            'score': float(score) if score else 0.0,
+                            'src_match': src_field
+                        }
+            
+            return mappings, sql_query, raw_result
+        except Exception as e:
+            error_msg = str(e)
+            st.error(f"❌ Could not get auto-mappings from field_matcher_advanced: {error_msg}")
+            return {}, None, None
+    
+    def sanitize_table_name(filename):
+        """Convert filename to valid Snowflake table name"""
+        import re
+        # Remove file extension
+        name = filename.rsplit('.', 1)[0]
+        # Replace invalid characters with underscores
+        name = re.sub(r'[^a-zA-Z0-9_]', '_', name)
+        # Ensure it starts with a letter
+        if name and not name[0].isalpha():
+            name = 'T_' + name
+        # Uppercase and limit length
+        name = name.upper()[:128]
+        return name
+    
+    def create_mapped_table(df, column_mapping, table_name, schema="PROCESSOR"):
+        """Create a new table with ALL target columns and insert mapped data"""
+        try:
+            # Get all target fields from the mappings table
+            all_target_fields = get_unique_targets()
+            
+            if not all_target_fields:
+                return False, "No target fields found in mappings table."
+            
+            # Build source to target mapping for columns that are mapped
+            source_to_target = {}
+            for src_col, target_col in column_mapping.items():
+                if target_col and target_col != "(Ignored)":
+                    source_to_target[src_col] = target_col
+            
+            if not source_to_target:
+                return False, "No columns mapped. Please map at least one column."
+            
+            # Create table with ALL target column names (all VARCHAR for simplicity)
+            column_defs = ", ".join([f'"{col}" VARCHAR' for col in all_target_fields])
+            create_sql = f'CREATE OR REPLACE TABLE {schema}."{table_name}" ({column_defs})'
+            session.sql(create_sql).collect()
+            
+            # Prepare data for insertion - create dataframe with ALL target columns
+            df_mapped = pd.DataFrame(index=range(len(df)))
+            
+            # Add all target columns, populated with mapped data or NULL
+            for target_col in all_target_fields:
+                # Find if any source column maps to this target
+                source_col = None
+                for src, tgt in source_to_target.items():
+                    if tgt == target_col:
+                        source_col = src
+                        break
+                
+                if source_col and source_col in df.columns:
+                    # Map the source data to this target column
+                    df_mapped[target_col] = df[source_col].astype(str).replace('nan', None).replace('None', None)
+                else:
+                    # No mapping - column will be NULL
+                    df_mapped[target_col] = None
+            
+            # Insert data using Snowpark
+            snowpark_df = session.create_dataframe(df_mapped)
+            snowpark_df.write.mode("append").save_as_table(f'{schema}."{table_name}"')
+            
+            mapped_count = len(source_to_target)
+            total_cols = len(all_target_fields)
+            return True, f"Successfully created table {schema}.{table_name} with {len(df_mapped)} rows ({mapped_count} mapped columns, {total_cols - mapped_count} NULL columns)"
+        except Exception as e:
+            return False, str(e)
+    
+    # Progress indicator
+    steps = ["1️⃣ Upload File", "2️⃣ Map Columns", "3️⃣ Review & Approve", "4️⃣ Complete"]
+    current_step = st.session_state.upload_step
+    
+    # Show progress bar
+    progress_cols = st.columns(4)
+    for i, (col, step) in enumerate(zip(progress_cols, steps)):
+        with col:
+            if i + 1 < current_step:
+                st.success(step)
+            elif i + 1 == current_step:
+                st.info(step)
+            else:
+                st.write(step)
+    
+    st.write("---")
+    
+    # Reset button
+    if current_step > 1:
+        if st.button("🔄 Start Over", type="secondary"):
+            reset_upload_workflow()
+            st.rerun()
+    
+    # STEP 1: Upload File
+    if current_step == 1:
+        st.subheader("Step 1: Upload Your Data File")
+        
+        uploaded_file = st.file_uploader(
+            "Choose a CSV, TXT, or Excel file",
+            type=['csv', 'txt', 'xls', 'xlsx'],
+            help="Upload a file with headers in the first row"
+        )
+        
+        if uploaded_file is not None:
+            try:
+                file_extension = uploaded_file.name.lower().split('.')[-1]
+                
+                # Handle Excel files
+                if file_extension in ['xls', 'xlsx']:
+                    # Read Excel file
+                    df = pd.read_excel(uploaded_file, engine='openpyxl')
+                    
+                    # If multiple sheets, let user select (for now, use first sheet)
+                    # Future enhancement: add sheet selector
+                else:
+                    # Read text-based files (CSV, TXT)
+                    content = uploaded_file.getvalue().decode('utf-8')
+                    
+                    # Detect delimiter
+                    first_line = content.split('\n')[0]
+                    if '\t' in first_line:
+                        delimiter = '\t'
+                    elif '|' in first_line:
+                        delimiter = '|'
+                    else:
+                        delimiter = ','
+                    
+                    # Parse as DataFrame
+                    from io import StringIO
+                    df = pd.read_csv(StringIO(content), delimiter=delimiter)
+                
+                st.success(f"✅ File loaded: **{uploaded_file.name}** ({file_extension.upper()})")
+                
+                # Show file preview
+                st.write(f"**Preview** ({len(df)} rows, {len(df.columns)} columns)")
+                st.dataframe(df.head(10), use_container_width=True)
+                
+                # Show detected columns
+                st.write("**Detected Columns:**")
+                cols = st.columns(4)
+                for i, col in enumerate(df.columns):
+                    with cols[i % 4]:
+                        st.write(f"• {col}")
+                
+                # Proceed button
+                if st.button("➡️ Proceed to Column Mapping", type="primary"):
+                    st.session_state.uploaded_file_data = df
+                    st.session_state.uploaded_file_name = uploaded_file.name
+                    st.session_state.upload_step = 2
+                    # Get auto-mappings with debug info
+                    mappings, sql_query, raw_result = get_auto_mappings(list(df.columns))
+                    st.session_state.auto_mappings = mappings
+                    st.session_state.auto_mappings_sql = sql_query
+                    st.session_state.auto_mappings_raw_result = raw_result
+                    st.rerun()
+                    
+            except Exception as e:
+                st.error(f"❌ Error reading file: {str(e)}")
+    
+    # STEP 2: Map Columns
+    elif current_step == 2:
+        st.subheader("Step 2: Map Source Columns to Target Schema")
+        
+        df = st.session_state.uploaded_file_data
+        auto_mappings = st.session_state.auto_mappings
+        target_fields = get_unique_targets()
+        
+        if df is None:
+            st.error("No file data found. Please go back and upload a file.")
+            reset_upload_workflow()
+            st.rerun()
+        
+        st.write(f"**File:** {st.session_state.uploaded_file_name}")
+        st.write("Map each source column to a target field, or skip columns you don't need.")
+        
+        # Threshold slider for auto-mapping
+        col_slider, col_info = st.columns([2, 1])
+        with col_slider:
+            mapping_threshold = st.slider(
+                "Auto-mapping confidence threshold",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.3,
+                step=0.05,
+                help="Only auto-select target fields when confidence score is above this threshold. Lower = more auto-mappings, Higher = stricter matching."
+            )
+        with col_info:
+            st.write("")  # Spacing
+            if auto_mappings:
+                above_threshold = sum(1 for m in auto_mappings.values() if m.get('score', 0) >= mapping_threshold)
+                st.metric("Matches above threshold", f"{above_threshold} / {len(df.columns)}")
+        
+        # Show auto-mapping status
+        if auto_mappings:
+            matched_count = sum(1 for m in auto_mappings.values() if m.get('score', 0) >= mapping_threshold)
+            st.success(f"✅ Auto-matched {matched_count} of {len(df.columns)} columns using field_matcher_advanced (threshold: {mapping_threshold:.0%})")
+        else:
+            st.info("ℹ️ No auto-mappings available. Please map columns manually.")
+        
+        # Debug expander for auto-mapping details
+        with st.expander("🔍 Debug: Auto-Mapping Details", expanded=False):
+            # Show SQL query
+            sql_query = st.session_state.get('auto_mappings_sql', None)
+            if sql_query:
+                st.write("**SQL Query Executed:**")
+                st.code(sql_query, language="sql")
+            else:
+                st.write("No SQL query available.")
+            
+            # Show raw results
+            raw_result = st.session_state.get('auto_mappings_raw_result', None)
+            if raw_result is not None and len(raw_result) > 0:
+                st.write("**Raw Results from Stored Procedure:**")
+                st.write(f"Columns returned: {list(raw_result.columns)}")
+                st.dataframe(raw_result, use_container_width=True)
+            else:
+                st.write("No results returned from stored procedure.")
+            
+            # Show parsed mappings
+            if auto_mappings:
+                st.write("**Parsed Mappings:**")
+                mapping_debug = []
+                for input_col, mapping_info in auto_mappings.items():
+                    mapping_debug.append({
+                        "Input Column": input_col,
+                        "Suggested Target": mapping_info.get('target', ''),
+                        "Matched Source": mapping_info.get('src_match', ''),
+                        "Confidence Score": f"{mapping_info.get('score', 0):.4f}"
+                    })
+                st.dataframe(pd.DataFrame(mapping_debug), use_container_width=True)
+        
+        # Add skip option to target fields
+        target_options = ["(Ignored)"] + target_fields
+        
+        # Create mapping form
+        st.write("---")
+        
+        column_mappings = {}
+        
+        # Header row
+        header_col1, header_col2, header_col3, header_col4 = st.columns([2, 2, 1, 1])
+        with header_col1:
+            st.write("**Source Column**")
+        with header_col2:
+            st.write("**Target Field**")
+        with header_col3:
+            st.write("**Confidence**")
+        with header_col4:
+            st.write("**Add to Mappings**")
+        
+        for i, src_col in enumerate(df.columns):
+            col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+            
+            # Get auto-suggested mapping - try exact match first, then lowercase
+            auto_suggestion = auto_mappings.get(src_col, None)
+            if auto_suggestion is None:
+                auto_suggestion = auto_mappings.get(src_col.lower(), {})
+            suggested_target = auto_suggestion.get('target', None) if auto_suggestion else None
+            suggested_score = auto_suggestion.get('score', 0) if auto_suggestion else 0
+            src_match = auto_suggestion.get('src_match', '') if auto_suggestion else ''
+            
+            with col1:
+                st.write(f"**{src_col}**")
+                # Show sample values
+                sample_vals = df[src_col].dropna().head(3).tolist()
+                sample_str = ", ".join([str(v)[:30] for v in sample_vals])
+                st.caption(f"Sample: {sample_str}...")
+            
+            with col2:
+                # Find default index - only auto-select if score meets threshold
+                if suggested_target and suggested_target in target_options and suggested_score >= mapping_threshold:
+                    default_idx = target_options.index(suggested_target)
+                else:
+                    default_idx = 0  # Skip by default if no good match or below threshold
+                
+                selected_target = st.selectbox(
+                    f"Target for {src_col}",
+                    options=target_options,
+                    index=default_idx,
+                    key=f"map_{i}_{mapping_threshold}",  # Include threshold in key to force refresh on change
+                    label_visibility="collapsed"
+                )
+                column_mappings[src_col] = selected_target
+                
+                # Show what source field it matched to
+                if src_match and suggested_target:
+                    st.caption(f"Matched: '{src_match}'")
+            
+            with col3:
+                if suggested_target and suggested_score > 0:
+                    # Show confidence with color-coded indicator and percentage
+                    if suggested_score >= 0.8:
+                        st.success(f"🟢 {suggested_score:.1%}")
+                    elif suggested_score >= 0.5:
+                        st.warning(f"🟡 {suggested_score:.1%}")
+                    else:
+                        st.error(f"🔴 {suggested_score:.1%}")
+                else:
+                    st.write("—")
+            
+            with col4:
+                # Add to mappings button - only show if a target is selected (not Ignored)
+                if selected_target and selected_target != "(Ignored)":
+                    if st.button("➕ Add", key=f"add_mapping_{i}", help=f"Add '{src_col}' → '{selected_target}' to mappings"):
+                        try:
+                            # Check if mapping already exists
+                            check_sql = f"""
+                            SELECT COUNT(*) as cnt FROM PROCESSOR.MAPPINGS_LIST 
+                            WHERE SRC = '{src_col.replace("'", "''")}' 
+                            AND TARGET = '{selected_target.replace("'", "''")}'
+                            """
+                            existing = session.sql(check_sql).collect()[0][0]
+                            
+                            if existing > 0:
+                                st.warning(f"⚠️ Mapping already exists!")
+                            else:
+                                # Insert new mapping
+                                insert_sql = f"""
+                                INSERT INTO PROCESSOR.MAPPINGS_LIST (SRC, TARGET) 
+                                VALUES ('{src_col.replace("'", "''")}', '{selected_target.replace("'", "''")}')
+                                """
+                                session.sql(insert_sql).collect()
+                                st.success(f"✅ Added!")
+                        except Exception as e:
+                            st.error(f"❌ Error: {str(e)[:50]}")
+                else:
+                    st.write("—")
+        
+        st.write("---")
+        
+        # Summary
+        mapped_count = sum(1 for v in column_mappings.values() if v != "(Ignored)")
+        skipped_count = len(column_mappings) - mapped_count
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Columns to Map", mapped_count)
+        with col2:
+            st.metric("Columns to Skip", skipped_count)
+        
+        # Navigation buttons
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("⬅️ Back to Upload"):
+                st.session_state.upload_step = 1
+                st.rerun()
+        with col2:
+            if st.button("➡️ Review Mapping", type="primary", disabled=mapped_count == 0):
+                st.session_state.column_mappings = column_mappings
+                st.session_state.upload_step = 3
+                st.rerun()
+    
+    # STEP 3: Review & Approve
+    elif current_step == 3:
+        st.subheader("Step 3: Review and Approve Mapping")
+        
+        df = st.session_state.uploaded_file_data
+        column_mappings = st.session_state.column_mappings
+        
+        if df is None or not column_mappings:
+            st.error("Missing data. Please start over.")
+            reset_upload_workflow()
+            st.rerun()
+        
+        # Table name input
+        default_table_name = sanitize_table_name(st.session_state.uploaded_file_name)
+        table_name = st.text_input(
+            "Table Name",
+            value=default_table_name,
+            help="The name of the table to create in Snowflake"
+        )
+        
+        # Schema selection
+        schema_name = st.text_input(
+            "Schema",
+            value="PROCESSOR",
+            help="The schema where the table will be created"
+        )
+        
+        st.write("---")
+        
+        # Show mapping summary
+        st.write("**Column Mapping Summary:**")
+        
+        mapping_data = []
+        for src, tgt in column_mappings.items():
+            if tgt != "(Ignored)":
+                mapping_data.append({
+                    "Source Column": src,
+                    "Target Column": tgt,
+                    "Status": "✅ Mapped"
+                })
+            else:
+                mapping_data.append({
+                    "Source Column": src,
+                    "Target Column": "—",
+                    "Status": "⏭️ Skipped"
+                })
+        
+        mapping_df = pd.DataFrame(mapping_data)
+        st.dataframe(mapping_df, use_container_width=True, hide_index=True)
+        
+        # Preview transformed data
+        st.write("---")
+        st.write("**Preview of Transformed Data:**")
+        
+        # Create preview with mapped columns
+        preview_cols = {src: tgt for src, tgt in column_mappings.items() if tgt != "(Ignored)"}
+        if preview_cols:
+            preview_df = df[list(preview_cols.keys())].head(5).copy()
+            preview_df.columns = [preview_cols[col] for col in preview_df.columns]
+            st.dataframe(preview_df, use_container_width=True)
+        
+        # Stats
+        st.write("---")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Rows", len(df))
+        with col2:
+            st.metric("Mapped Columns", len(preview_cols))
+        with col3:
+            st.metric("Target Table", f"{schema_name}.{table_name}")
+        
+        # Navigation buttons
+        st.write("---")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("⬅️ Back to Mapping"):
+                st.session_state.upload_step = 2
+                st.rerun()
+        
+        with col2:
+            pass  # Empty column for spacing
+        
+        with col3:
+            if st.button("✅ Create Table", type="primary"):
+                with st.spinner("Creating table and inserting data..."):
+                    success, message = create_mapped_table(
+                        df, 
+                        column_mappings, 
+                        table_name, 
+                        schema_name
+                    )
+                
+                if success:
+                    st.session_state.created_table_name = f"{schema_name}.{table_name}"
+                    st.session_state.created_row_count = len(df)
+                    st.session_state.upload_step = 4
+                    st.rerun()
+                else:
+                    st.error(f"❌ Error creating table: {message}")
+    
+    # STEP 4: Complete
+    elif current_step == 4:
+        st.subheader("Step 4: Complete! 🎉")
+        
+        st.success(f"""
+        **Table Created Successfully!**
+        
+        - **Table:** `{st.session_state.get('created_table_name', 'Unknown')}`
+        - **Rows Inserted:** {st.session_state.get('created_row_count', 0)}
+        """)
+        
+        # Show query to view data
+        table_name = st.session_state.get('created_table_name', '')
+        st.write("**Query to view your data:**")
+        st.code(f'SELECT * FROM {table_name} LIMIT 100;', language='sql')
+        
+        # Option to view data
+        if st.button("👀 Preview Created Table"):
+            try:
+                preview = session.sql(f'SELECT * FROM {table_name} LIMIT 10').to_pandas()
+                st.dataframe(preview, use_container_width=True)
+            except Exception as e:
+                st.error(f"Error previewing table: {str(e)}")
+        
+        # Start over button
+        if st.button("📤 Upload Another File", type="primary"):
+            reset_upload_workflow()
+            st.rerun()
+
+# Help section (shown in all tabs)
+st.write("---")
+with st.expander("ℹ️ Help & Instructions"):
+    st.markdown("""
+    **Edit Mappings Tab:**
+    - **Load Data**: Fetch current mappings from Snowflake
+    - **Edit Existing**: Use the data editor to modify source field names or delete rows
+    - **Add New**: Use the form to add new source→target mappings
+    - **Filter/Search**: Use filters to find specific mappings quickly
+    - **Save Changes**: Persist your edits to Snowflake
+    - **Bulk Operations**: Delete multiple mappings or export data
+    
+    **Test Matches Tab:**
+    - **Input Methods**: Enter field names via text area or add individually
+    - **Quick Examples**: Load common test scenarios with preset buttons
+    - **Algorithm Parameters**: Adjust matching sensitivity and result count
+    - **Results Analysis**: View detailed scores and confidence levels
+    - **Export Results**: Download matching results as CSV
+    
+    **Upload & Map File Tab:**
+    - **Step 1 - Upload**: Upload a CSV or TXT file with headers
+    - **Step 2 - Map**: Map each source column to a target field (auto-suggestions provided)
+    - **Step 3 - Review**: Review the mapping and preview transformed data
+    - **Step 4 - Complete**: Table is created with mapped data
+    
+    **Matching Algorithm Details:**
+    - **Exact Match (40%)**: Identical field names after normalization
+    - **Substring Match (20%)**: One field contains the other
+    - **Sequence Similarity (20%)**: Character-level similarity (handles typos)
+    - **Word Overlap (20%)**: Word-based similarity (Jaccard coefficient)
+    - **TF-IDF Enhancement (30%)**: Semantic similarity boost using machine learning
+    
+    **Tips:**
+    - Target fields are standardized healthcare terms (not editable)
+    - Source fields can be customized to match your data sources
+    - Higher confidence scores indicate better matches
+    - The file upload tab auto-suggests mappings based on the matching algorithm
+    - Table names are automatically sanitized from the filename
+    """)
