@@ -10,7 +10,7 @@ st.title("ClaimsIQ 🏥")
 st.write("Healthcare claims field mapping and data processing")
 
 # Create tabs
-tab1, tab2, tab3 = st.tabs(["📤 Upload & Map File", "📝 Edit Mappings", "🔍 Test Matches"])
+tab1, tab2, tab3, tab4 = st.tabs(["📤 Upload & Map File", "📝 Edit Mappings", "🔍 Test Matches", "📊 View Tables"])
 
 # Initialize session state for data management
 if 'mappings_data' not in st.session_state:
@@ -1185,6 +1185,11 @@ with st.expander("ℹ️ Help & Instructions"):
     - **Step 3 - Review**: Review the mapping and preview transformed data
     - **Step 4 - Complete**: Table is created with mapped data
     
+    **View Tables Tab:**
+    - **Browse Tables**: View all tables in the PROCESSOR schema
+    - **Inspect Data**: Preview table contents and structure
+    - **Table Details**: View row counts, column info, and creation dates
+    
     **Matching Algorithm Details:**
     - **Exact Match (40%)**: Identical field names after normalization
     - **Substring Match (20%)**: One field contains the other
@@ -1199,3 +1204,191 @@ with st.expander("ℹ️ Help & Instructions"):
     - The file upload tab auto-suggests mappings based on the matching algorithm
     - Table names are automatically sanitized from the filename
     """)
+
+# TAB 4: View Tables
+with tab4:
+    st.subheader("📊 View Tables")
+    st.write("Browse and inspect tables created in the PROCESSOR schema")
+    
+    # Function to get list of tables
+    def get_schema_tables():
+        """Get list of tables in the PROCESSOR schema"""
+        try:
+            tables_query = """
+            SELECT 
+                TABLE_NAME,
+                ROW_COUNT,
+                BYTES,
+                CREATED,
+                LAST_ALTERED
+            FROM CLAIMSIQ.INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_SCHEMA = 'PROCESSOR'
+            AND TABLE_TYPE = 'BASE TABLE'
+            ORDER BY CREATED DESC
+            """
+            result = session.sql(tables_query).to_pandas()
+            return result
+        except Exception as e:
+            st.error(f"Error fetching tables: {str(e)}")
+            return None
+    
+    # Function to get table columns
+    def get_table_columns(table_name):
+        """Get column information for a table"""
+        try:
+            columns_query = f"""
+            SELECT 
+                COLUMN_NAME,
+                DATA_TYPE,
+                IS_NULLABLE,
+                ORDINAL_POSITION
+            FROM CLAIMSIQ.INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = 'PROCESSOR'
+            AND TABLE_NAME = '{table_name}'
+            ORDER BY ORDINAL_POSITION
+            """
+            result = session.sql(columns_query).to_pandas()
+            return result
+        except Exception as e:
+            st.error(f"Error fetching columns: {str(e)}")
+            return None
+    
+    # Function to preview table data
+    def preview_table_data(table_name, limit=100):
+        """Preview data from a table"""
+        try:
+            preview_query = f'SELECT * FROM PROCESSOR."{table_name}" LIMIT {limit}'
+            result = session.sql(preview_query).to_pandas()
+            return result
+        except Exception as e:
+            st.error(f"Error fetching data: {str(e)}")
+            return None
+    
+    # Refresh button
+    if st.button("🔄 Refresh Table List", type="primary"):
+        st.rerun()
+    
+    # Get tables
+    tables_df = get_schema_tables()
+    
+    if tables_df is not None and len(tables_df) > 0:
+        st.write(f"**Found {len(tables_df)} tables in CLAIMSIQ.PROCESSOR**")
+        
+        # Display table list with metrics
+        st.write("---")
+        
+        # Table selector
+        table_names = tables_df['TABLE_NAME'].tolist()
+        selected_table = st.selectbox(
+            "Select a table to inspect",
+            options=table_names,
+            index=0
+        )
+        
+        if selected_table:
+            # Get table info
+            table_info = tables_df[tables_df['TABLE_NAME'] == selected_table].iloc[0]
+            
+            # Display table metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                row_count = table_info['ROW_COUNT'] if table_info['ROW_COUNT'] else 0
+                st.metric("Rows", f"{row_count:,}")
+            with col2:
+                bytes_size = table_info['BYTES'] if table_info['BYTES'] else 0
+                if bytes_size > 1024*1024:
+                    size_str = f"{bytes_size/(1024*1024):.2f} MB"
+                elif bytes_size > 1024:
+                    size_str = f"{bytes_size/1024:.2f} KB"
+                else:
+                    size_str = f"{bytes_size} B"
+                st.metric("Size", size_str)
+            with col3:
+                created = table_info['CREATED']
+                if created:
+                    st.metric("Created", str(created)[:10])
+                else:
+                    st.metric("Created", "—")
+            with col4:
+                altered = table_info['LAST_ALTERED']
+                if altered:
+                    st.metric("Last Modified", str(altered)[:10])
+                else:
+                    st.metric("Last Modified", "—")
+            
+            st.write("---")
+            
+            # Tabs for table details
+            detail_tab1, detail_tab2 = st.tabs(["📋 Data Preview", "🔧 Column Schema"])
+            
+            with detail_tab1:
+                st.write(f"**Data Preview for `{selected_table}`**")
+                
+                # Row limit selector
+                preview_limit = st.slider("Preview rows", min_value=10, max_value=500, value=100, step=10)
+                
+                # Get preview data
+                preview_df = preview_table_data(selected_table, preview_limit)
+                
+                if preview_df is not None and len(preview_df) > 0:
+                    st.dataframe(preview_df, use_container_width=True)
+                    
+                    # Download button
+                    csv_data = preview_df.to_csv(index=False)
+                    st.download_button(
+                        label=f"📥 Download {selected_table} (first {len(preview_df)} rows)",
+                        data=csv_data,
+                        file_name=f"{selected_table}.csv",
+                        mime="text/csv"
+                    )
+                elif preview_df is not None:
+                    st.info("Table is empty")
+            
+            with detail_tab2:
+                st.write(f"**Column Schema for `{selected_table}`**")
+                
+                # Get columns
+                columns_df = get_table_columns(selected_table)
+                
+                if columns_df is not None and len(columns_df) > 0:
+                    # Display columns in a nice format
+                    st.dataframe(
+                        columns_df,
+                        use_container_width=True,
+                        column_config={
+                            "COLUMN_NAME": st.column_config.TextColumn("Column Name"),
+                            "DATA_TYPE": st.column_config.TextColumn("Data Type"),
+                            "IS_NULLABLE": st.column_config.TextColumn("Nullable"),
+                            "ORDINAL_POSITION": st.column_config.NumberColumn("Position")
+                        }
+                    )
+                    
+                    st.write(f"**Total Columns:** {len(columns_df)}")
+            
+            st.write("---")
+            
+            # Danger zone - delete table
+            with st.expander("⚠️ Danger Zone", expanded=False):
+                st.warning("**Delete this table permanently**")
+                st.write(f"This will permanently delete the table `{selected_table}` and all its data.")
+                
+                confirm_name = st.text_input(
+                    f"Type the table name to confirm deletion",
+                    placeholder=selected_table,
+                    key="delete_confirm"
+                )
+                
+                if st.button("🗑️ Delete Table", type="secondary"):
+                    if confirm_name == selected_table:
+                        try:
+                            delete_sql = f'DROP TABLE IF EXISTS PROCESSOR."{selected_table}"'
+                            session.sql(delete_sql).collect()
+                            st.success(f"✅ Table `{selected_table}` deleted successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error deleting table: {str(e)}")
+                    else:
+                        st.error("❌ Table name doesn't match. Deletion cancelled.")
+    
+    else:
+        st.info("No tables found in CLAIMSIQ.PROCESSOR schema. Upload and map a file to create your first table!")
