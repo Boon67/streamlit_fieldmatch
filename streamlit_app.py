@@ -151,17 +151,24 @@ def normalize_column_names(df):
 
 # TAB 2: Edit Mappings
 with tab2:
-    # Load data button
-    col1, col2, col3 = st.columns([1, 1, 2])
+    st.markdown("""
+    **Manage field mappings** used by the auto-mapping algorithm. 
+    Add new source field variations to improve future matching accuracy.
+    """)
+    
+    # Action bar with buttons
+    st.markdown("### 🔧 Actions")
+    action_col1, action_col2, action_col3 = st.columns([1, 1, 2])
 
-    with col1:
-        if st.button("🔄 Load Data", type="primary"):
+    with action_col1:
+        if st.button("🔄 Refresh Data", type="primary", use_container_width=True):
             st.session_state.mappings_data = load_mappings_data()
             st.session_state.changes_made = False
             st.rerun()
 
-    with col2:
-        if st.button("💾 Save Changes", disabled=not st.session_state.changes_made):
+    with action_col2:
+        save_disabled = not st.session_state.changes_made
+        if st.button("💾 Save Changes", disabled=save_disabled, use_container_width=True):
             if st.session_state.mappings_data is not None and st.session_state.changes_made:
                 original_data = load_mappings_data()
                 result = save_changes(st.session_state.mappings_data, original_data)
@@ -172,14 +179,20 @@ with tab2:
                     st.rerun()
                 else:
                     st.error(f"❌ Error saving changes: {result[3] if len(result) > 3 else 'Unknown error'}")
+    
+    with action_col3:
+        if st.session_state.changes_made:
+            st.warning("⚠️ You have unsaved changes!")
 
     # Load initial data if not loaded
     if st.session_state.mappings_data is None:
         st.session_state.mappings_data = load_mappings_data()
 
+    st.write("---")
+
     # Display current data
     if st.session_state.mappings_data is not None and len(st.session_state.mappings_data) > 0:
-        st.subheader("Current Mappings")
+        st.markdown("### 📋 Current Mappings")
         
         # Group by target field for better organization
         targets = st.session_state.mappings_data['TARGET'].unique()
@@ -338,14 +351,14 @@ with tab2:
                 mime="text/csv"
             )
 
-    # Warning about unsaved changes
-    if st.session_state.changes_made:
-        st.warning("⚠️ You have unsaved changes! Click 'Save Changes' to persist your edits to Snowflake.")
+    # Note: Unsaved changes warning is shown in the action bar at the top
 
 # TAB 3: Test Matches
 with tab3:
-    st.subheader("🔍 Test Field Matching Algorithm")
-    st.write("Test how well the field matching algorithm performs on your field names")
+    st.markdown("""
+    **Test the field matching algorithm** to see how it matches your field names to target fields.
+    This helps you understand the matching confidence before processing files.
+    """)
     
     # Configuration section
     col1, col2 = st.columns([2, 1])
@@ -437,23 +450,25 @@ with tab3:
     # Test execution
     st.write("---")
     
-    col1, col2, col3 = st.columns([2, 1, 1])
-    
-    with col1:
-        if test_field_list:
-            st.write(f"**Ready to test {len(test_field_list)} field names**")
+    if test_field_list:
+        st.markdown(f"### 🧪 Ready to Test ({len(test_field_list)} fields)")
+        
+        # Show fields in a compact format
+        with st.expander("View fields to test", expanded=False):
             for field in test_field_list:
                 st.write(f"• {field}")
-    
-    with col2:
-        test_button = st.button(
-            "🚀 Run Field Matching Test", 
-            type="primary",
-            disabled=len(test_field_list) == 0
-        )
-    
-    with col3:
-        if test_field_list:
+        
+        # Action row
+        action_col1, action_col2 = st.columns([2, 1])
+        
+        with action_col1:
+            test_button = st.button(
+                "🚀 Run Field Matching Test", 
+                type="primary",
+                use_container_width=True
+            )
+        
+        with action_col2:
             # Show SQL that would be executed
             escaped_fields = [field.replace("'", "''") for field in test_field_list]
             formatted_fields = "['" + "', '".join(escaped_fields) + "']"
@@ -465,6 +480,9 @@ with tab3:
             
             with st.expander("📄 View SQL"):
                 st.code(sql_preview, language="sql")
+    else:
+        st.info("👆 **Enter field names above** to test the matching algorithm")
+        test_button = False
     
     # Execute test
     if test_button and test_field_list:
@@ -775,10 +793,13 @@ with tab1:
     if current_step == 1:
         st.subheader("Step 1: Upload Your Data File")
         
+        # Instructions box
+        st.info("📁 **Upload a file** containing your claims data. The first row should contain column headers.")
+        
         uploaded_file = st.file_uploader(
             "Choose a CSV, TXT, or Excel file",
             type=['csv', 'txt', 'xls', 'xlsx'],
-            help="Upload a file with headers in the first row"
+            help="Supported formats: CSV, TXT (tab/pipe/comma delimited), XLS, XLSX"
         )
         
         if uploaded_file is not None:
@@ -809,21 +830,46 @@ with tab1:
                     from io import StringIO
                     df = pd.read_csv(StringIO(content), delimiter=delimiter)
                 
-                st.success(f"✅ File loaded: **{uploaded_file.name}** ({file_extension.upper()})")
+                # File loaded success banner with Continue button
+                success_col, button_col = st.columns([3, 1])
+                with success_col:
+                    st.success(f"✅ **File loaded successfully!** — {uploaded_file.name}")
+                with button_col:
+                    if st.button("➡️ Continue", type="primary", use_container_width=True, key="continue_top"):
+                        st.session_state.uploaded_file_data = df
+                        st.session_state.uploaded_file_name = uploaded_file.name
+                        st.session_state.upload_step = 2
+                        # Get auto-mappings with debug info
+                        mappings, sql_query, raw_result = get_auto_mappings(list(df.columns))
+                        st.session_state.auto_mappings = mappings
+                        st.session_state.auto_mappings_sql = sql_query
+                        st.session_state.auto_mappings_raw_result = raw_result
+                        st.rerun()
+                
+                # Quick stats in columns
+                stat_col1, stat_col2, stat_col3 = st.columns(3)
+                with stat_col1:
+                    st.metric("Rows", f"{len(df):,}")
+                with stat_col2:
+                    st.metric("Columns", len(df.columns))
+                with stat_col3:
+                    st.metric("Format", file_extension.upper())
                 
                 # Show file preview
-                st.write(f"**Preview** ({len(df)} rows, {len(df.columns)} columns)")
-                st.dataframe(df.head(10), use_container_width=True)
+                with st.expander("📋 **Data Preview** (first 10 rows)", expanded=True):
+                    st.dataframe(df.head(10), use_container_width=True)
                 
                 # Show detected columns
-                st.write("**Detected Columns:**")
-                cols = st.columns(4)
-                for i, col in enumerate(df.columns):
-                    with cols[i % 4]:
-                        st.write(f"• {col}")
+                with st.expander(f"📊 **Detected Columns** ({len(df.columns)} columns)", expanded=False):
+                    cols = st.columns(4)
+                    for i, col in enumerate(df.columns):
+                        with cols[i % 4]:
+                            st.write(f"• {col}")
                 
-                # Proceed button
-                if st.button("➡️ Proceed to Column Mapping", type="primary"):
+                st.write("---")
+                
+                # Bottom continue button for users who scroll
+                if st.button("➡️ Continue to Column Mapping", type="primary", use_container_width=True, key="continue_bottom"):
                     st.session_state.uploaded_file_data = df
                     st.session_state.uploaded_file_name = uploaded_file.name
                     st.session_state.upload_step = 2
@@ -836,6 +882,14 @@ with tab1:
                     
             except Exception as e:
                 st.error(f"❌ Error reading file: {str(e)}")
+        else:
+            # Show placeholder when no file uploaded
+            st.markdown("""
+            <div style="border: 2px dashed #666; border-radius: 10px; padding: 40px; text-align: center; margin: 20px 0;">
+                <p style="font-size: 18px; color: #888;">Drag and drop a file above, or click to browse</p>
+                <p style="color: #666;">Supported: CSV, TXT, XLS, XLSX</p>
+            </div>
+            """, unsafe_allow_html=True)
     
     # STEP 2: Map Columns
     elif current_step == 2:
@@ -850,8 +904,23 @@ with tab1:
             reset_upload_workflow()
             st.rerun()
         
-        st.write(f"**File:** {st.session_state.uploaded_file_name}")
-        st.write("Map each source column to a target field, or skip columns you don't need.")
+        # Top navigation bar with file info and buttons
+        top_col1, top_col2, top_col3 = st.columns([3, 1, 1])
+        with top_col1:
+            st.info(f"📁 **File:** {st.session_state.uploaded_file_name} — {len(df):,} rows, {len(df.columns)} columns")
+        with top_col2:
+            if st.button("⬅️ Back", use_container_width=True, key="back_top"):
+                st.session_state.upload_step = 1
+                st.rerun()
+        with top_col3:
+            # This will be enabled/disabled based on validation below, using a placeholder
+            top_continue_placeholder = st.empty()
+        
+        st.markdown("""
+        **Instructions:** For each source column, select the corresponding target field from the dropdown.
+        Columns set to "(Ignored)" will not be included in the output table.
+        Use the **➕ Add** button to save new mappings for future use.
+        """)
         
         # Threshold slider for auto-mapping
         col_slider, col_info = st.columns([2, 1])
@@ -915,7 +984,41 @@ with tab1:
         # Create mapping form
         st.write("---")
         
+        # First pass: collect all current selections to detect duplicates
         column_mappings = {}
+        for i, src_col in enumerate(df.columns):
+            # Get the current selection from session state if it exists
+            key = f"map_{i}_{mapping_threshold}"
+            if key in st.session_state:
+                column_mappings[src_col] = st.session_state[key]
+            else:
+                # Use auto-suggestion logic for initial value
+                auto_suggestion = auto_mappings.get(src_col, None)
+                if auto_suggestion is None:
+                    auto_suggestion = auto_mappings.get(src_col.lower(), {})
+                suggested_target = auto_suggestion.get('target', None) if auto_suggestion else None
+                suggested_score = auto_suggestion.get('score', 0) if auto_suggestion else 0
+                
+                if suggested_target and suggested_target in target_options and suggested_score >= mapping_threshold:
+                    column_mappings[src_col] = suggested_target
+                else:
+                    column_mappings[src_col] = "(Ignored)"
+        
+        # Detect duplicate target mappings
+        target_counts = {}
+        for src, tgt in column_mappings.items():
+            if tgt != "(Ignored)":
+                if tgt not in target_counts:
+                    target_counts[tgt] = []
+                target_counts[tgt].append(src)
+        
+        duplicate_targets = {tgt: srcs for tgt, srcs in target_counts.items() if len(srcs) > 1}
+        
+        # Show duplicate warning if any
+        if duplicate_targets:
+            st.error(f"⚠️ **Duplicate mappings detected!** {len(duplicate_targets)} target field(s) have multiple source columns mapped:")
+            for tgt, srcs in duplicate_targets.items():
+                st.write(f"  • **{tgt}** ← {', '.join(srcs)}")
         
         # Header row
         header_col1, header_col2, header_col3, header_col4 = st.columns([2, 2, 1, 1])
@@ -928,7 +1031,16 @@ with tab1:
         with header_col4:
             st.write("**Add to Mappings**")
         
+        # Second pass: render the UI
         for i, src_col in enumerate(df.columns):
+            # Check if this row has a duplicate
+            current_target = column_mappings.get(src_col, "(Ignored)")
+            is_duplicate = current_target in duplicate_targets
+            
+            # Use container with highlight for duplicates
+            if is_duplicate:
+                st.markdown(f'<div style="background-color: rgba(255, 100, 100, 0.2); padding: 5px; border-radius: 5px; border-left: 4px solid #ff4444;">', unsafe_allow_html=True)
+            
             col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
             
             # Get auto-suggested mapping - try exact match first, then lowercase
@@ -940,7 +1052,10 @@ with tab1:
             src_match = auto_suggestion.get('src_match', '') if auto_suggestion else ''
             
             with col1:
-                st.write(f"**{src_col}**")
+                if is_duplicate:
+                    st.write(f"⚠️ **{src_col}**")
+                else:
+                    st.write(f"**{src_col}**")
                 # Show sample values
                 sample_vals = df[src_col].dropna().head(3).tolist()
                 sample_str = ", ".join([str(v)[:30] for v in sample_vals])
@@ -962,12 +1077,21 @@ with tab1:
                 )
                 column_mappings[src_col] = selected_target
                 
-                # Show what source field it matched to
-                if src_match and suggested_target:
+                # Show what source field it matched to - only if above threshold
+                if src_match and suggested_target and suggested_score >= mapping_threshold:
                     st.caption(f"Matched: '{src_match}'")
+                
+                # Show duplicate warning on this row
+                if is_duplicate:
+                    other_sources = [s for s in duplicate_targets[current_target] if s != src_col]
+                    st.caption(f"🔴 Also mapped by: {', '.join(other_sources)}")
+            
+            if is_duplicate:
+                st.markdown('</div>', unsafe_allow_html=True)
             
             with col3:
-                if suggested_target and suggested_score > 0:
+                # Only show confidence if score meets threshold
+                if suggested_target and suggested_score >= mapping_threshold:
                     # Show confidence with color-coded indicator and percentage
                     if suggested_score >= 0.8:
                         st.success(f"🟢 {suggested_score:.1%}")
@@ -1000,7 +1124,13 @@ with tab1:
                                 VALUES ('{src_col.replace("'", "''")}', '{selected_target.replace("'", "''")}')
                                 """
                                 session.sql(insert_sql).collect()
-                                st.success(f"✅ Added!")
+                                st.success(f"✅ Added! Refreshing mappings...")
+                                # Rerun auto-mapping to pick up the new mapping
+                                mappings, sql_query, raw_result = get_auto_mappings(list(df.columns))
+                                st.session_state.auto_mappings = mappings
+                                st.session_state.auto_mappings_sql = sql_query
+                                st.session_state.auto_mappings_raw_result = raw_result
+                                st.rerun()
                         except Exception as e:
                             st.error(f"❌ Error: {str(e)[:50]}")
                 else:
@@ -1008,24 +1138,56 @@ with tab1:
         
         st.write("---")
         
-        # Summary
+        # Summary section with prominent styling
+        st.markdown("### 📊 Mapping Summary")
+        
         mapped_count = sum(1 for v in column_mappings.values() if v != "(Ignored)")
         skipped_count = len(column_mappings) - mapped_count
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Columns to Map", mapped_count)
-        with col2:
-            st.metric("Columns to Skip", skipped_count)
+        summary_col1, summary_col2, summary_col3 = st.columns(3)
+        with summary_col1:
+            st.metric("✅ Columns to Map", mapped_count)
+        with summary_col2:
+            st.metric("⏭️ Columns Ignored", skipped_count)
+        with summary_col3:
+            st.metric("📁 Total Columns", len(column_mappings))
         
-        # Navigation buttons
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("⬅️ Back to Upload"):
+        # Recalculate duplicates for validation
+        final_target_counts = {}
+        for src, tgt in column_mappings.items():
+            if tgt != "(Ignored)":
+                if tgt not in final_target_counts:
+                    final_target_counts[tgt] = []
+                final_target_counts[tgt].append(src)
+        final_duplicates = {tgt: srcs for tgt, srcs in final_target_counts.items() if len(srcs) > 1}
+        has_duplicates = len(final_duplicates) > 0
+        proceed_disabled = mapped_count == 0 or has_duplicates
+        
+        # Update the top continue button now that we have validation info
+        with top_continue_placeholder:
+            if st.button("➡️ Continue", type="primary", disabled=proceed_disabled, use_container_width=True, key="continue_top_step2"):
+                st.session_state.column_mappings = column_mappings
+                st.session_state.upload_step = 3
+                st.rerun()
+        
+        # Validation message
+        if mapped_count == 0:
+            st.warning("⚠️ **No columns mapped!** Please select at least one target field to continue.")
+        elif has_duplicates:
+            st.error(f"⚠️ **Cannot proceed!** {len(final_duplicates)} target field(s) have duplicate mappings. Please resolve duplicates first.")
+        else:
+            st.success(f"✅ **Ready to proceed!** {mapped_count} column(s) will be mapped to the target schema.")
+        
+        st.write("---")
+        
+        # Bottom navigation buttons
+        nav_col1, nav_col2 = st.columns(2)
+        with nav_col1:
+            if st.button("⬅️ Back to Upload", use_container_width=True, key="back_bottom"):
                 st.session_state.upload_step = 1
                 st.rerun()
-        with col2:
-            if st.button("➡️ Review Mapping", type="primary", disabled=mapped_count == 0):
+        with nav_col2:
+            if st.button("➡️ Review & Create Table", type="primary", disabled=proceed_disabled, use_container_width=True, key="continue_bottom_step2"):
                 st.session_state.column_mappings = column_mappings
                 st.session_state.upload_step = 3
                 st.rerun()
@@ -1042,25 +1204,32 @@ with tab1:
             reset_upload_workflow()
             st.rerun()
         
-        # Table name input
-        default_table_name = sanitize_table_name(st.session_state.uploaded_file_name)
-        table_name = st.text_input(
-            "Table Name",
-            value=default_table_name,
-            help="The name of the table to create in Snowflake"
-        )
+        # Table configuration section
+        st.markdown("### 🗄️ Table Configuration")
         
-        # Schema selection
-        schema_name = st.text_input(
-            "Schema",
-            value="PROCESSOR",
-            help="The schema where the table will be created"
-        )
+        config_col1, config_col2 = st.columns(2)
+        with config_col1:
+            default_table_name = sanitize_table_name(st.session_state.uploaded_file_name)
+            table_name = st.text_input(
+                "📝 Table Name",
+                value=default_table_name,
+                help="The name of the table to create in Snowflake"
+            )
+        
+        with config_col2:
+            schema_name = st.text_input(
+                "📂 Schema",
+                value="PROCESSOR",
+                help="The schema where the table will be created"
+            )
+        
+        # Show full table path
+        st.info(f"📍 **Full table path:** `CLAIMSIQ.{schema_name}.{table_name}`")
         
         st.write("---")
         
-        # Show mapping summary
-        st.write("**Column Mapping Summary:**")
+        # Show mapping summary in expander
+        st.markdown("### 📋 Column Mapping Summary")
         
         mapping_data = []
         for src, tgt in column_mappings.items():
@@ -1074,47 +1243,86 @@ with tab1:
                 mapping_data.append({
                     "Source Column": src,
                     "Target Column": "—",
-                    "Status": "⏭️ Skipped"
+                    "Status": "⏭️ Ignored"
                 })
         
         mapping_df = pd.DataFrame(mapping_data)
-        st.dataframe(mapping_df, use_container_width=True, hide_index=True)
+        
+        # Count mapped vs ignored
+        mapped_count = sum(1 for m in mapping_data if m["Status"] == "✅ Mapped")
+        ignored_count = len(mapping_data) - mapped_count
+        
+        tab_mapped, tab_ignored = st.tabs([f"✅ Mapped ({mapped_count})", f"⏭️ Ignored ({ignored_count})"])
+        
+        with tab_mapped:
+            mapped_df = mapping_df[mapping_df["Status"] == "✅ Mapped"]
+            if len(mapped_df) > 0:
+                st.dataframe(mapped_df, use_container_width=True, hide_index=True)
+            else:
+                st.write("No columns mapped")
+        
+        with tab_ignored:
+            ignored_df = mapping_df[mapping_df["Status"] == "⏭️ Ignored"]
+            if len(ignored_df) > 0:
+                st.dataframe(ignored_df[["Source Column"]], use_container_width=True, hide_index=True)
+            else:
+                st.write("No columns ignored")
         
         # Preview transformed data
         st.write("---")
-        st.write("**Preview of Transformed Data:**")
+        st.markdown("### 👀 Data Preview")
         
         # Create preview with mapped columns
         preview_cols = {src: tgt for src, tgt in column_mappings.items() if tgt != "(Ignored)"}
         if preview_cols:
             preview_df = df[list(preview_cols.keys())].head(5).copy()
             preview_df.columns = [preview_cols[col] for col in preview_df.columns]
+            st.write("First 5 rows with mapped column names:")
             st.dataframe(preview_df, use_container_width=True)
         
         # Stats
         st.write("---")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Rows", len(df))
-        with col2:
-            st.metric("Mapped Columns", len(preview_cols))
-        with col3:
-            st.metric("Target Table", f"{schema_name}.{table_name}")
+        st.markdown("### 📊 Summary")
         
-        # Navigation buttons
+        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+        with stat_col1:
+            st.metric("📄 Total Rows", f"{len(df):,}")
+        with stat_col2:
+            st.metric("✅ Mapped Columns", len(preview_cols))
+        with stat_col3:
+            all_targets = get_unique_targets()
+            st.metric("🎯 Target Columns", len(all_targets) if all_targets else 0)
+        with stat_col4:
+            st.metric("🗄️ Target Table", table_name)
+        
         st.write("---")
-        col1, col2, col3 = st.columns(3)
         
-        with col1:
-            if st.button("⬅️ Back to Mapping"):
+        # Final confirmation and action buttons
+        st.markdown("### 🚀 Ready to Create Table?")
+        
+        st.warning(f"""
+        **Please confirm:**
+        - Table `{schema_name}.{table_name}` will be created (or replaced if it exists)
+        - **{len(df):,}** rows will be inserted
+        - **{len(preview_cols)}** source columns will be mapped
+        - All **{len(all_targets) if all_targets else 0}** target columns will be created (unmapped columns will be NULL)
+        """)
+        
+        # Navigation buttons - prominent
+        action_col1, action_col2, action_col3 = st.columns([1, 1, 2])
+        
+        with action_col1:
+            if st.button("⬅️ Back to Mapping", use_container_width=True):
                 st.session_state.upload_step = 2
                 st.rerun()
         
-        with col2:
-            pass  # Empty column for spacing
+        with action_col2:
+            if st.button("🔄 Start Over", use_container_width=True):
+                reset_upload_workflow()
+                st.rerun()
         
-        with col3:
-            if st.button("✅ Create Table", type="primary"):
+        with action_col3:
+            if st.button("✅ Create Table Now", type="primary", use_container_width=True):
                 with st.spinner("Creating table and inserting data..."):
                     success, message = create_mapped_table(
                         df, 
@@ -1133,32 +1341,78 @@ with tab1:
     
     # STEP 4: Complete
     elif current_step == 4:
-        st.subheader("Step 4: Complete! 🎉")
+        # Success banner
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #1a472a 0%, #2d5a3d 100%); 
+                    padding: 30px; border-radius: 10px; text-align: center; margin-bottom: 20px;">
+            <h1 style="color: white; margin: 0;">🎉 Success!</h1>
+            <p style="color: #90EE90; font-size: 18px; margin-top: 10px;">Your table has been created successfully</p>
+        </div>
+        """, unsafe_allow_html=True)
         
-        st.success(f"""
-        **Table Created Successfully!**
-        
-        - **Table:** `{st.session_state.get('created_table_name', 'Unknown')}`
-        - **Rows Inserted:** {st.session_state.get('created_row_count', 0)}
-        """)
-        
-        # Show query to view data
+        # Table details
         table_name = st.session_state.get('created_table_name', '')
-        st.write("**Query to view your data:**")
-        st.code(f'SELECT * FROM {table_name} LIMIT 100;', language='sql')
+        row_count = st.session_state.get('created_row_count', 0)
         
-        # Option to view data
-        if st.button("👀 Preview Created Table"):
+        detail_col1, detail_col2 = st.columns(2)
+        with detail_col1:
+            st.metric("📍 Table Created", table_name)
+        with detail_col2:
+            st.metric("📊 Rows Inserted", f"{row_count:,}")
+        
+        st.write("---")
+        
+        # Quick actions section
+        st.markdown("### 🚀 What's Next?")
+        
+        action_col1, action_col2, action_col3 = st.columns(3)
+        
+        with action_col1:
+            st.markdown("**Preview the data**")
+            if st.button("👀 View Table Data", use_container_width=True):
+                st.session_state.show_preview = True
+        
+        with action_col2:
+            st.markdown("**Upload more files**")
+            if st.button("📤 Upload Another File", type="primary", use_container_width=True):
+                reset_upload_workflow()
+                st.rerun()
+        
+        with action_col3:
+            st.markdown("**Manage tables**")
+            st.info("Go to **View Tables** tab to inspect and manage your tables")
+        
+        # Show preview if requested
+        if st.session_state.get('show_preview', False):
+            st.write("---")
+            st.markdown(f"### 📋 Preview: `{table_name}`")
             try:
-                preview = session.sql(f'SELECT * FROM {table_name} LIMIT 10').to_pandas()
+                preview = session.sql(f'SELECT * FROM {table_name} LIMIT 20').to_pandas()
                 st.dataframe(preview, use_container_width=True)
+                
+                # Download option
+                csv_data = preview.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Preview as CSV",
+                    data=csv_data,
+                    file_name=f"{table_name.replace('.', '_')}_preview.csv",
+                    mime="text/csv"
+                )
             except Exception as e:
                 st.error(f"Error previewing table: {str(e)}")
         
-        # Start over button
-        if st.button("📤 Upload Another File", type="primary"):
-            reset_upload_workflow()
-            st.rerun()
+        st.write("---")
+        
+        # SQL reference
+        with st.expander("📝 SQL Query Reference", expanded=False):
+            st.write("**Query to view all data:**")
+            st.code(f'SELECT * FROM {table_name};', language='sql')
+            
+            st.write("**Query to count rows:**")
+            st.code(f'SELECT COUNT(*) FROM {table_name};', language='sql')
+            
+            st.write("**Query to view column info:**")
+            st.code(f"DESCRIBE TABLE {table_name};", language='sql')
 
 # Help section (shown in all tabs)
 st.write("---")
@@ -1368,27 +1622,32 @@ with tab4:
             st.write("---")
             
             # Danger zone - delete table
-            with st.expander("⚠️ Danger Zone", expanded=False):
-                st.warning("**Delete this table permanently**")
-                st.write(f"This will permanently delete the table `{selected_table}` and all its data.")
-                
-                confirm_name = st.text_input(
-                    f"Type the table name to confirm deletion",
-                    placeholder=selected_table,
-                    key="delete_confirm"
-                )
-                
-                if st.button("🗑️ Delete Table", type="secondary"):
-                    if confirm_name == selected_table:
+            # Don't allow deletion of MAPPINGS_LIST (system table)
+            if selected_table.upper() == "MAPPINGS_LIST":
+                st.info("ℹ️ The MAPPINGS_LIST table is a system table and cannot be deleted.")
+            else:
+                with st.expander("⚠️ Danger Zone", expanded=False):
+                    st.warning("**Delete this table permanently**")
+                    st.write(f"This will permanently delete the table `{selected_table}` and all its data.")
+                    
+                    # Use checkbox confirmation instead of text input
+                    # Use table name in key so it resets when selecting different table
+                    confirm_delete = st.checkbox(
+                        f"I confirm I want to delete **{selected_table}**",
+                        key=f"delete_confirm_{selected_table}"
+                    )
+                    
+                    if st.button("🗑️ Delete Table", type="secondary", disabled=not confirm_delete):
                         try:
                             delete_sql = f'DROP TABLE IF EXISTS PROCESSOR."{selected_table}"'
                             session.sql(delete_sql).collect()
+                            # Clear the checkbox state before rerun
+                            if f"delete_confirm_{selected_table}" in st.session_state:
+                                del st.session_state[f"delete_confirm_{selected_table}"]
                             st.success(f"✅ Table `{selected_table}` deleted successfully!")
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Error deleting table: {str(e)}")
-                    else:
-                        st.error("❌ Table name doesn't match. Deletion cancelled.")
     
     else:
         st.info("No tables found in CLAIMSIQ.PROCESSOR schema. Upload and map a file to create your first table!")
