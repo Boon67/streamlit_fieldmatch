@@ -10,13 +10,39 @@ st.title("ClaimsIQ 🏥")
 st.write("Healthcare claims field mapping and data processing")
 
 # Create tabs
-tab1, tab2, tab3, tab4 = st.tabs(["📤 Upload & Map File", "📝 Edit Mappings", "🔍 Test Matches", "📊 View Tables"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 Upload & Map File", "📝 Edit Mappings", "🔍 Test Matches", "📊 View Tables", "🤖 LLM Settings"])
 
 # Initialize session state for data management
 if 'mappings_data' not in st.session_state:
     st.session_state.mappings_data = None
 if 'changes_made' not in st.session_state:
     st.session_state.changes_made = False
+
+# Default LLM prompt template
+DEFAULT_LLM_PROMPT = """You are a healthcare data expert helping to map source columns to target schema fields.
+
+SOURCE COLUMNS (from uploaded file):
+{source_list}
+
+TARGET FIELDS (standard schema):
+{target_list}
+
+TASK: For each source column, determine the best matching target field based on:
+1. Semantic meaning (e.g., "DOB" matches "Date of Birth", "Claimant DOB")
+2. Common healthcare abbreviations (e.g., "CPT", "ICD", "NPI", "Rx")
+3. Field naming patterns (e.g., "amt" = "Amount", "dt" = "Date")
+
+IMPORTANT RULES:
+- Each target field can only be mapped ONCE. If multiple source columns could match the same target, choose the BEST match and set others to "NONE".
+- Be conservative - only suggest matches you're confident about.
+- Use "NONE" for columns that don't have a clear match.
+
+RESPONSE FORMAT: Return ONLY a JSON object with source columns as keys and objects containing "target" (best match or "NONE" if no good match) and "confidence" (0.0-1.0). Example:
+{{"column_name": {{"target": "Target Field Name", "confidence": 0.85}}}}"""
+
+# Initialize LLM prompt in session state
+if 'llm_prompt_template' not in st.session_state:
+    st.session_state.llm_prompt_template = DEFAULT_LLM_PROMPT
 
 def load_mappings_data():
     """Load current mappings data from Snowflake"""
@@ -26,6 +52,27 @@ def load_mappings_data():
     except Exception as e:
         st.error(f"Error loading data: {str(e)}")
         return pd.DataFrame(columns=['SRC', 'TARGET'])
+
+def get_available_llm_models():
+    """Get list of available Cortex LLM models from Snowflake"""
+    try:
+        # Query available models from Snowflake
+        session.sql("SHOW MODELS IN SNOWFLAKE.MODELS").collect()
+        models_df = session.sql("""
+            SELECT "name" AS model_name
+            FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+            WHERE "model_type" = 'CORTEX_BASE'
+            ORDER BY "name"
+        """).to_pandas()
+        
+        if models_df is not None and len(models_df) > 0:
+            return models_df['MODEL_NAME'].tolist()
+        else:
+            # Fallback to common models if query returns empty
+            return ["llama3.1-70b", "mistral-large2", "mistral-7b"]
+    except Exception as e:
+        # Fallback to common models if query fails
+        return ["llama3.1-70b", "mistral-large2", "mistral-7b"]
 
 def get_unique_targets():
     """Get list of unique target field names"""
@@ -654,6 +701,7 @@ with tab1:
         st.session_state.auto_mappings = {}
         st.session_state.auto_mappings_sql = None
         st.session_state.auto_mappings_raw_result = None
+        st.session_state.matching_method_used = None
     
     def get_auto_mappings(source_columns, show_debug=False):
         """Get automatic mapping suggestions for source columns using field_matcher_advanced"""
@@ -708,6 +756,102 @@ with tab1:
             error_msg = str(e)
             st.error(f"❌ Could not get auto-mappings from field_matcher_advanced: {error_msg}")
             return {}, None, None
+    
+    def get_llm_recommendations(source_columns, target_fields, model_name="llama3.1-70b"):
+        """Use Snowflake Cortex LLM to get intelligent field mapping recommendations"""
+        try:
+            if not source_columns or not target_fields:
+                return {}, None, None
+            
+            # Build the prompt for the LLM using the template from session state
+            source_list = "\n".join([f"- {col}" for col in source_columns])
+            target_list = "\n".join([f"- {field}" for field in target_fields])
+            
+            # Get the prompt template from session state
+            prompt_template = st.session_state.get('llm_prompt_template', DEFAULT_LLM_PROMPT)
+            
+            # Format the prompt with source and target lists
+            prompt = prompt_template.format(source_list=source_list, target_list=target_list)
+
+            # Escape the prompt for SQL
+            escaped_prompt = prompt.replace("'", "''").replace("\\", "\\\\")
+            
+            # Call Snowflake Cortex COMPLETE function with selected model
+            sql_query = f"""
+            SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                '{model_name}',
+                '{escaped_prompt}'
+            ) as response
+            """
+            
+            result = session.sql(sql_query).collect()
+            
+            if not result or len(result) == 0:
+                return {}, sql_query, "No response from LLM"
+            
+            response_text = result[0][0]
+            
+            # Parse the JSON response
+            import json
+            import re
+            
+            # Try to extract JSON from the response (LLM might include extra text)
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                try:
+                    llm_mappings = json.loads(json_match.group())
+                    
+                    # First pass: collect all mappings with their confidence scores
+                    raw_mappings = {}
+                    for src_col, match_info in llm_mappings.items():
+                        if isinstance(match_info, dict):
+                            target = match_info.get('target', 'NONE')
+                            confidence = float(match_info.get('confidence', 0))
+                        else:
+                            target = str(match_info)
+                            confidence = 0.5
+                        
+                        if target and target != 'NONE' and target in target_fields:
+                            raw_mappings[src_col] = {
+                                'target': target,
+                                'score': confidence,
+                                'src_match': 'LLM'
+                            }
+                    
+                    # Second pass: resolve duplicates - keep only the best match for each target
+                    # Group by target field
+                    target_to_sources = {}
+                    for src_col, mapping_info in raw_mappings.items():
+                        target = mapping_info['target']
+                        if target not in target_to_sources:
+                            target_to_sources[target] = []
+                        target_to_sources[target].append((src_col, mapping_info))
+                    
+                    # For each target, keep only the source with highest confidence
+                    mappings = {}
+                    for target, source_list in target_to_sources.items():
+                        if len(source_list) == 1:
+                            # No duplicates, keep as-is
+                            src_col, mapping_info = source_list[0]
+                            mappings[src_col] = mapping_info
+                            mappings[src_col.lower()] = mapping_info
+                        else:
+                            # Duplicates found - select the one with highest confidence
+                            best_match = max(source_list, key=lambda x: x[1]['score'])
+                            src_col, mapping_info = best_match
+                            mappings[src_col] = mapping_info
+                            mappings[src_col.lower()] = mapping_info
+                            # Note: other sources that mapped to this target are now unmapped
+                    
+                    return mappings, sql_query, response_text
+                except json.JSONDecodeError:
+                    return {}, sql_query, f"Failed to parse JSON: {response_text}"
+            else:
+                return {}, sql_query, f"No JSON found in response: {response_text}"
+                
+        except Exception as e:
+            error_msg = str(e)
+            return {}, None, f"LLM Error: {error_msg}"
     
     def sanitize_table_name(filename):
         """Convert filename to valid Snowflake table name"""
@@ -848,11 +992,12 @@ with tab1:
                         st.session_state.uploaded_file_data = df
                         st.session_state.uploaded_file_name = uploaded_file.name
                         st.session_state.upload_step = 2
-                        # Get auto-mappings with debug info
+                        # Get auto-mappings with debug info (default to stored procedure)
                         mappings, sql_query, raw_result = get_auto_mappings(list(df.columns))
                         st.session_state.auto_mappings = mappings
                         st.session_state.auto_mappings_sql = sql_query
                         st.session_state.auto_mappings_raw_result = raw_result
+                        st.session_state.matching_method_used = "Pattern Match/ML"
                         st.rerun()
                 
                 # Quick stats in columns
@@ -882,11 +1027,12 @@ with tab1:
                     st.session_state.uploaded_file_data = df
                     st.session_state.uploaded_file_name = uploaded_file.name
                     st.session_state.upload_step = 2
-                    # Get auto-mappings with debug info
+                    # Get auto-mappings with debug info (default to stored procedure)
                     mappings, sql_query, raw_result = get_auto_mappings(list(df.columns))
                     st.session_state.auto_mappings = mappings
                     st.session_state.auto_mappings_sql = sql_query
                     st.session_state.auto_mappings_raw_result = raw_result
+                    st.session_state.matching_method_used = "Stored Procedure"
                     st.rerun()
                     
             except Exception as e:
@@ -931,6 +1077,47 @@ with tab1:
         Use the **➕ Add** button to save new mappings for future use.
         """)
         
+        # Matching method selection
+        st.markdown("#### 🔧 Matching Method")
+        method_col1, method_col2, method_col3 = st.columns([2, 2, 1])
+        with method_col1:
+            matching_method = st.radio(
+                "Select matching method",
+                options=["Pattern Match/ML", "LLM (Cortex AI)"],
+                horizontal=True,
+                help="**Pattern Match/ML**: Uses field_matcher_advanced with TF-IDF similarity matching. **LLM**: Uses Snowflake Cortex AI for intelligent semantic matching.",
+                key="matching_method"
+            )
+        
+        # LLM model selection (only shown when LLM is selected)
+        with method_col2:
+            if matching_method == "LLM (Cortex AI)":
+                # Fetch available Cortex LLM models from Snowflake in realtime
+                llm_models = get_available_llm_models()
+                selected_model = st.selectbox(
+                    "Select LLM Model",
+                    options=llm_models,
+                    index=0,
+                    help="Available Cortex AI models in your region. List is fetched dynamically from Snowflake.",
+                    key="llm_model_select"
+                )
+        
+        with method_col3:
+            if matching_method == "LLM (Cortex AI)":
+                if st.button("🤖 Run LLM Matching", type="primary", use_container_width=True):
+                    with st.spinner(f"Calling {selected_model}..."):
+                        llm_mappings, llm_sql, llm_response = get_llm_recommendations(list(df.columns), target_fields, selected_model)
+                        st.session_state.auto_mappings = llm_mappings
+                        st.session_state.auto_mappings_sql = llm_sql
+                        st.session_state.auto_mappings_raw_result = llm_response
+                        st.session_state.matching_method_used = "LLM"
+                        st.session_state.llm_model_used = selected_model
+                    st.rerun()
+        
+        # Update auto_mappings based on method (for display purposes)
+        if matching_method == "LLM (Cortex AI)" and st.session_state.get('matching_method_used') != "LLM":
+            st.info("👆 Select a model and click **Run LLM Matching** to use Cortex AI for column matching")
+        
         # Threshold slider for auto-mapping
         col_slider, col_info = st.columns([2, 1])
         with col_slider:
@@ -949,14 +1136,24 @@ with tab1:
                 st.metric("Matches above threshold", f"{above_threshold} / {len(df.columns)}")
         
         # Show auto-mapping status
+        method_used = st.session_state.get('matching_method_used', 'Pattern Match/ML')
         if auto_mappings:
             matched_count = sum(1 for m in auto_mappings.values() if m.get('score', 0) >= mapping_threshold)
-            st.success(f"✅ Auto-matched {matched_count} of {len(df.columns)} columns using field_matcher_advanced (threshold: {mapping_threshold:.0%})")
+            if method_used == "LLM":
+                llm_model_used = st.session_state.get('llm_model_used', 'Cortex AI')
+                st.success(f"✅ Auto-matched {matched_count} of {len(df.columns)} columns using **{llm_model_used}** (threshold: {mapping_threshold:.0%})")
+            else:
+                st.success(f"✅ Auto-matched {matched_count} of {len(df.columns)} columns using **field_matcher_advanced** (threshold: {mapping_threshold:.0%})")
         else:
-            st.info("ℹ️ No auto-mappings available. Please map columns manually.")
+            st.info("ℹ️ No auto-mappings available. Please map columns manually or run LLM matching.")
         
         # Debug expander for auto-mapping details
         with st.expander("🔍 Debug: Auto-Mapping Details", expanded=False):
+            st.write(f"**Matching Method Used:** {method_used}")
+            if method_used == "LLM":
+                llm_model_used = st.session_state.get('llm_model_used', 'unknown')
+                st.write(f"**LLM Model:** {llm_model_used}")
+            
             # Show SQL query
             sql_query = st.session_state.get('auto_mappings_sql', None)
             if sql_query:
@@ -967,12 +1164,19 @@ with tab1:
             
             # Show raw results
             raw_result = st.session_state.get('auto_mappings_raw_result', None)
-            if raw_result is not None and len(raw_result) > 0:
-                st.write("**Raw Results from Stored Procedure:**")
-                st.write(f"Columns returned: {list(raw_result.columns)}")
-                st.dataframe(raw_result, use_container_width=True)
+            if raw_result is not None:
+                if method_used == "LLM":
+                    st.write("**LLM Response:**")
+                    if isinstance(raw_result, str):
+                        st.text(raw_result)
+                    else:
+                        st.write(raw_result)
+                elif hasattr(raw_result, '__len__') and len(raw_result) > 0:
+                    st.write("**Raw Results from Pattern Match/ML:**")
+                    st.write(f"Columns returned: {list(raw_result.columns)}")
+                    st.dataframe(raw_result, use_container_width=True)
             else:
-                st.write("No results returned from stored procedure.")
+                st.write("No results available.")
             
             # Show parsed mappings
             if auto_mappings:
@@ -1153,12 +1357,14 @@ with tab1:
         mapped_count = sum(1 for v in column_mappings.values() if v != "(Ignored)")
         skipped_count = len(column_mappings) - mapped_count
         
-        summary_col1, summary_col2, summary_col3 = st.columns(3)
+        summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
         with summary_col1:
-            st.metric("✅ Columns to Map", mapped_count)
+            st.metric("🎚️ Confidence Threshold", f"{mapping_threshold:.0%}")
         with summary_col2:
-            st.metric("⏭️ Columns Ignored", skipped_count)
+            st.metric("✅ Columns Mapped", mapped_count)
         with summary_col3:
+            st.metric("⏭️ Columns Ignored", skipped_count)
+        with summary_col4:
             st.metric("📁 Total Columns", len(column_mappings))
         
         # Recalculate duplicates for validation
@@ -1660,3 +1866,98 @@ with tab4:
     
     else:
         st.info("No tables found in CLAIMSIQ.PROCESSOR schema. Upload and map a file to create your first table!")
+
+# TAB 5: LLM Settings
+with tab5:
+    st.subheader("🤖 LLM Settings")
+    st.write("Configure the LLM prompt template used for intelligent field mapping.")
+    
+    st.markdown("""
+    **About the Prompt Template:**
+    - The prompt is sent to the selected Cortex AI model when you use LLM matching
+    - Use `{source_list}` as a placeholder for the source column names
+    - Use `{target_list}` as a placeholder for the target field names
+    - The LLM should return a JSON object mapping source columns to targets with confidence scores
+    """)
+    
+    st.write("---")
+    
+    # Action buttons
+    action_col1, action_col2, action_col3 = st.columns([1, 1, 2])
+    
+    with action_col1:
+        if st.button("🔄 Reset to Default", type="secondary", use_container_width=True):
+            st.session_state.llm_prompt_template = DEFAULT_LLM_PROMPT
+            st.success("✅ Prompt reset to default!")
+            st.rerun()
+    
+    with action_col2:
+        if st.button("💾 Save Changes", type="primary", use_container_width=True, key="save_llm_prompt"):
+            # The prompt is automatically saved via session state when edited
+            st.success("✅ Prompt template saved!")
+    
+    with action_col3:
+        st.write("")  # Spacer
+    
+    st.write("---")
+    
+    # Editable prompt template
+    st.markdown("### 📝 Prompt Template")
+    
+    # Show current prompt in a text area
+    edited_prompt = st.text_area(
+        "Edit the LLM prompt template:",
+        value=st.session_state.llm_prompt_template,
+        height=400,
+        help="Edit the prompt sent to the LLM. Use {source_list} and {target_list} as placeholders.",
+        key="llm_prompt_editor"
+    )
+    
+    # Update session state if changed
+    if edited_prompt != st.session_state.llm_prompt_template:
+        st.session_state.llm_prompt_template = edited_prompt
+        st.info("📝 Prompt modified. Click **Save Changes** to confirm.")
+    
+    # Show placeholder info
+    st.write("---")
+    st.markdown("### 📋 Available Placeholders")
+    
+    placeholder_data = [
+        {"Placeholder": "{source_list}", "Description": "List of source column names from the uploaded file (one per line with bullet points)"},
+        {"Placeholder": "{target_list}", "Description": "List of target field names from the mappings table (one per line with bullet points)"},
+    ]
+    st.table(pd.DataFrame(placeholder_data))
+    
+    # Preview section
+    st.write("---")
+    st.markdown("### 👁️ Prompt Preview")
+    
+    with st.expander("Preview prompt with sample data", expanded=False):
+        # Sample data for preview
+        sample_sources = ["PAT_FNAME", "PAT_LNAME", "PAT_BIRTH_DT", "CLM_NBR", "BILLED_AMT"]
+        sample_targets = ["Claimant First Name", "Claimant Last Name", "Claimant DOB", "Claim Number/Claim Control Number", "Billed Amount"]
+        
+        sample_source_list = "\n".join([f"- {col}" for col in sample_sources])
+        sample_target_list = "\n".join([f"- {field}" for field in sample_targets])
+        
+        try:
+            preview_prompt = st.session_state.llm_prompt_template.format(
+                source_list=sample_source_list,
+                target_list=sample_target_list
+            )
+            st.code(preview_prompt, language="text")
+        except KeyError as e:
+            st.error(f"❌ Invalid placeholder in prompt: {e}")
+        except Exception as e:
+            st.error(f"❌ Error previewing prompt: {e}")
+    
+    # Tips section
+    st.write("---")
+    st.markdown("### 💡 Tips for Better Results")
+    st.markdown("""
+    - **Be specific** about the expected JSON output format
+    - **Include examples** of common abbreviations in your domain
+    - **Set clear rules** about handling duplicates and uncertain matches
+    - **Specify confidence thresholds** in the prompt if needed
+    - **Test with different models** - some models follow instructions better than others
+    """)

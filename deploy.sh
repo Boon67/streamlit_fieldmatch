@@ -37,211 +37,84 @@ echo "📋 Step 2: Creating mappings table..."
 snow sql -q "
 CREATE TABLE IF NOT EXISTS ${DATABASE}.${SCHEMA}.MAPPINGS_LIST (
     SRC VARCHAR,
-    TARGET VARCHAR
+    TARGET VARCHAR,
+    DESCRIPTION VARCHAR
 );
+" || true
+# Add DESCRIPTION column if it doesn't exist (for existing tables)
+snow sql -q "
+ALTER TABLE ${DATABASE}.${SCHEMA}.MAPPINGS_LIST ADD COLUMN IF NOT EXISTS DESCRIPTION VARCHAR;
 " || true
 echo "✓ Mappings table ready"
 echo ""
 
-# Step 3: Load initial data using MERGE
-echo "📊 Step 3: Loading field mappings data..."
+# Step 3: Load initial data from CSV file using MERGE
+echo "📊 Step 3: Loading field mappings data from mappings.csv..."
+
+# Get the directory where the script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CSV_FILE="${SCRIPT_DIR}/mappings.csv"
+
+if [ ! -f "$CSV_FILE" ]; then
+    echo "❌ Error: mappings.csv not found at ${CSV_FILE}"
+    exit 1
+fi
+
+# Build VALUES clause from CSV file (skip header line)
+VALUES_CLAUSE=""
+while IFS=',' read -r src target description || [ -n "$src" ]; do
+    # Skip header row
+    if [ "$src" = "SRC" ]; then
+        continue
+    fi
+    # Skip empty lines
+    if [ -z "$src" ]; then
+        continue
+    fi
+    # Escape single quotes in values
+    src_escaped=$(echo "$src" | sed "s/'/''/g")
+    target_escaped=$(echo "$target" | sed "s/'/''/g")
+    description_escaped=$(echo "$description" | sed "s/'/''/g")
+    
+    if [ -n "$VALUES_CLAUSE" ]; then
+        VALUES_CLAUSE="${VALUES_CLAUSE},"$'\n'
+    fi
+    VALUES_CLAUSE="${VALUES_CLAUSE}    ('${src_escaped}', '${target_escaped}', '${description_escaped}')"
+done < "$CSV_FILE"
+
 snow sql -q "
 MERGE INTO ${DATABASE}.${SCHEMA}.MAPPINGS_LIST AS target
 USING (
     SELECT * FROM VALUES
-    ('Policy Effective Date', 'Policy Effective Date'),
-    ('Group Name', 'Group Name'),
-    ('Insured First Name', 'Insured First Name'),
-    ('Insured Last Name', 'Insured Last Name'),
-    ('Insured DOB', 'Insured DOB'),
-    ('Claimant First Name', 'Claimant First Name'),
-    ('Claimant Last Name', 'Claimant Last Name'),
-    ('Claimant DOB', 'Claimant DOB'),
-    ('Beginning Service Date', 'Beginning Service Date'),
-    ('Claim Number/Claim Control Number', 'Claim Number/Claim Control Number'),
-    ('Ending Service Date', 'Ending Service Date'),
-    ('Processed Date', 'Processed Date'),
-    ('Primary ICD', 'Primary ICD'),
-    ('Secondary ICD', 'Secondary ICD'),
-    ('CPT Code', 'CPT Code'),
-    ('HCPCS Code', 'HCPCS Code'),
-    ('Revenue Code', 'Revenue Code'),
-    ('Modifier Code', 'Modifier Code'),
-    ('Product Type', 'Product Type'),
-    ('NPI?', 'NPI?'),
-    ('Rx Name', 'Rx Name'),
-    ('Rx Quantity', 'Rx Quantity'),
-    ('Rx Days Supply', 'Rx Days Supply'),
-    ('Rx Date Filled', 'Rx Date Filled'),
-    ('Billed Amount', 'Billed Amount'),
-    ('Copay Amount', 'Copay Amount'),
-    ('Deductible Amount', 'Deductible Amount'),
-    ('Coinsurance Amount', 'Coinsurance Amount'),
-    ('Allowed Amount', 'Allowed Amount'),
-    ('Net Amount', 'Net Amount'),
-    ('Ineligible Amount', 'Ineligible Amount'),
-    ('COB Amount', 'COB Amount'),
-    ('Other Reduced Amount', 'Other Reduced Amount'),
-    ('Denied Amount', 'Denied Amount'),
-    ('Paid Amount', 'Paid Amount'),
-    ('Service Line/Claim Type', 'Service Line/Claim Type'),
-    ('Payee Name', 'Payee Name'),
-    ('Payee Address', 'Payee Address'),
-    ('Payee TIN', 'Payee TIN')
-    AS source (src, target)
+${VALUES_CLAUSE}
+    AS source (src, target, description)
 ) AS source
 ON target.src = source.src AND target.target = source.target
 WHEN NOT MATCHED THEN
-    INSERT (src, target) VALUES (source.src, source.target);
+    INSERT (src, target, description) VALUES (source.src, source.target, source.description)
+WHEN MATCHED THEN
+    UPDATE SET description = source.description;
 " || true
-echo "✓ Field mappings loaded"
+echo "✓ Field mappings loaded from mappings.csv"
 echo ""
 
-# Step 4: Deploy the stored procedure
-echo "🔧 Step 4: Deploying field matcher stored procedure..."
-snow sql -q "
-CREATE OR REPLACE PROCEDURE ${DATABASE}.${SCHEMA}.field_matcher_advanced(
-    input_fields ARRAY,
-    top_n INTEGER DEFAULT 3,
-    min_threshold FLOAT DEFAULT 0.1
-)
-RETURNS TABLE (
-    input_field STRING,
-    src_field STRING,
-    target_field STRING,
-    combined_score FLOAT,
-    exact_score FLOAT,
-    substring_score FLOAT,
-    sequence_score FLOAT,
-    word_overlap FLOAT,
-    tfidf_score FLOAT,
-    match_rank INTEGER
-)
-LANGUAGE PYTHON
-RUNTIME_VERSION = '3.11'
-PACKAGES = ('numpy', 'scikit-learn', 'snowflake-snowpark-python')
-HANDLER = 'run'
-AS
-\$\$
-import re
-import numpy as np
-from difflib import SequenceMatcher
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from snowflake.snowpark.functions import col
-from snowflake.snowpark.types import StructType, StructField, StringType, FloatType, IntegerType
+# Step 4: Deploy the stored procedure from mapping_proc.sql
+echo "🔧 Step 4: Deploying field matcher stored procedure from mapping_proc.sql..."
 
-def preprocess_text(text):
-    if not text:
-        return ''
-    text = re.sub(r'[^\w\s]', ' ', text.lower())
-    return ' '.join(text.split())
+SQL_FILE="${SCRIPT_DIR}/mapping_proc.sql"
 
-def calculate_similarity_scores(input_text, src_fields, src_to_target_map):
-    input_clean = preprocess_text(input_text)
-    scores = []
-    
-    for src_field in src_fields:
-        src_clean = preprocess_text(src_field)
-        exact_score = 1.0 if input_clean == src_clean else 0.0
-        substring_score = 1.0 if (input_clean in src_clean or src_clean in input_clean) else 0.0
-        sequence_score = SequenceMatcher(None, input_clean, src_clean).ratio()
-        
-        input_words = set(input_clean.split()) if input_clean else set()
-        src_words = set(src_clean.split()) if src_clean else set()
-        
-        if len(input_words.union(src_words)) > 0:
-            word_overlap = len(input_words.intersection(src_words)) / len(input_words.union(src_words))
-        else:
-            word_overlap = 0.0
-        
-        combined_score = (
-            exact_score * 0.4 +
-            substring_score * 0.2 +
-            sequence_score * 0.2 +
-            word_overlap * 0.2
-        )
-        
-        scores.append({
-            'src_field': src_field,
-            'target_field': src_to_target_map.get(src_field, 'UNMAPPED'),
-            'combined_score': combined_score,
-            'exact_score': exact_score,
-            'substring_score': substring_score,
-            'sequence_score': sequence_score,
-            'word_overlap': word_overlap,
-            'tfidf_score': 0.0
-        })
-    
-    return scores
+if [ ! -f "$SQL_FILE" ]; then
+    echo "❌ Error: mapping_proc.sql not found at ${SQL_FILE}"
+    exit 1
+fi
 
-def add_tfidf_scores(input_text, scores, src_fields):
-    try:
-        tfidf = TfidfVectorizer(lowercase=True, ngram_range=(1, 3), max_features=1000)
-        preprocessed_src_fields = [preprocess_text(field) for field in src_fields]
-        preprocessed_input = preprocess_text(input_text)
-        tfidf_matrix = tfidf.fit_transform(preprocessed_src_fields)
-        input_vector = tfidf.transform([preprocessed_input])
-        cosine_scores = cosine_similarity(input_vector, tfidf_matrix)[0]
-        
-        for i, score_dict in enumerate(scores):
-            score_dict['tfidf_score'] = float(cosine_scores[i])
-            score_dict['combined_score'] = (
-                score_dict['combined_score'] * 0.7 + 
-                cosine_scores[i] * 0.3
-            )
-    except Exception as e:
-        for score_dict in scores:
-            score_dict['tfidf_score'] = 0.0
-    
-    return scores
+# Read the SQL file and replace the procedure name with fully qualified name
+SQL_CONTENT=$(cat "$SQL_FILE")
+# Replace "CREATE OR REPLACE PROCEDURE field_matcher_advanced" with fully qualified name
+SQL_CONTENT=$(echo "$SQL_CONTENT" | sed "s/CREATE OR REPLACE PROCEDURE field_matcher_advanced/CREATE OR REPLACE PROCEDURE ${DATABASE}.${SCHEMA}.field_matcher_advanced/")
 
-def run(session, input_fields, top_n, min_threshold):
-    mappings_query = 'SELECT SRC, TARGET FROM mappings_list ORDER BY SRC'
-    mappings_result = session.sql(mappings_query).collect()
-    
-    src_fields = [row[0] for row in mappings_result]
-    src_to_target_map = {row[0]: row[1] for row in mappings_result}
-    
-    results = []
-    
-    for input_field in input_fields:
-        field_scores = calculate_similarity_scores(input_field, src_fields, src_to_target_map)
-        field_scores = add_tfidf_scores(input_field, field_scores, src_fields)
-        field_scores = sorted(field_scores, key=lambda x: x['combined_score'], reverse=True)
-        filtered_scores = [s for s in field_scores if s['combined_score'] >= min_threshold][:top_n]
-        
-        for rank, score_dict in enumerate(filtered_scores, 1):
-            results.append([
-                input_field,
-                score_dict['src_field'],
-                score_dict['target_field'],
-                round(score_dict['combined_score'], 4),
-                round(score_dict['exact_score'], 4),
-                round(score_dict['substring_score'], 4),
-                round(score_dict['sequence_score'], 4),
-                round(score_dict['word_overlap'], 4),
-                round(score_dict['tfidf_score'], 4),
-                rank
-            ])
-    
-    schema = StructType([
-        StructField('input_field', StringType()),
-        StructField('src_field', StringType()),
-        StructField('target_field', StringType()),
-        StructField('combined_score', FloatType()),
-        StructField('exact_score', FloatType()),
-        StructField('substring_score', FloatType()),
-        StructField('sequence_score', FloatType()),
-        StructField('word_overlap', FloatType()),
-        StructField('tfidf_score', FloatType()),
-        StructField('match_rank', IntegerType())
-    ])
-    
-    return session.create_dataframe(results, schema)
-\$\$;
-" || true
-echo "✓ Stored procedure deployed"
+snow sql -q "$SQL_CONTENT" || true
+echo "✓ Stored procedure deployed from mapping_proc.sql"
 echo ""
 
 # Step 5: Deploy the Streamlit app

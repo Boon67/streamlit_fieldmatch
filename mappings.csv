@@ -1,0 +1,40 @@
+SRC,TARGET,DESCRIPTION
+POLICY_EFF_DT,Policy Effective Date,Date when the insurance policy became effective
+GRP_NM,Group Name,Name of the employer group or plan sponsor
+INSRD_FIRST_NM,Insured First Name,First name of the primary insured/subscriber
+INSRD_LAST_NM,Insured Last Name,Last name of the primary insured/subscriber
+INSRD_DOB,Insured DOB,Date of birth of the primary insured/subscriber
+CLMNT_FIRST_NM,Claimant First Name,First name of the patient/claimant receiving services
+CLMNT_LAST_NM,Claimant Last Name,Last name of the patient/claimant receiving services
+CLMNT_DOB,Claimant DOB,Date of birth of the patient/claimant
+SVC_FROM_DT,Beginning Service Date,Start date of the medical service or treatment
+CLM_CTRL_NBR,Claim Number/Claim Control Number,Unique identifier for the claim in the system
+SVC_TO_DT,Ending Service Date,End date of the medical service or treatment
+PROC_DT,Processed Date,Date when the claim was processed/adjudicated
+PRIM_DIAG_CD,Primary ICD,Primary ICD diagnosis code for the claim
+SEC_DIAG_CD,Secondary ICD,Secondary ICD diagnosis code for the claim
+CPT_CD,CPT Code,Current Procedural Terminology code for the service
+HCPCS_CD,HCPCS Code,Healthcare Common Procedure Coding System code
+REV_CD,Revenue Code,Revenue code identifying the type of service/department
+MOD_CD,Modifier Code,CPT/HCPCS modifier code providing additional service details
+PROD_TYP,Product Type,Type of insurance product (e.g. HMO PPO POS)
+NPI_NBR,NPI?,National Provider Identifier for the rendering provider
+RX_NM,Rx Name,Name of the prescription drug dispensed
+RX_QTY,Rx Quantity,Quantity of medication dispensed
+RX_DAYS_SUPPLY,Rx Days Supply,Number of days the prescription should last
+RX_FILL_DT,Rx Date Filled,Date the prescription was filled at the pharmacy
+BILLED_AMT,Billed Amount,Total amount billed by the provider for services
+COPAY_AMT,Copay Amount,Fixed amount the member pays at time of service
+DEDUCT_AMT,Deductible Amount,Amount applied to the member annual deductible
+COINS_AMT,Coinsurance Amount,Percentage-based amount the member pays after deductible
+ALLOWED_AMT,Allowed Amount,Maximum amount the plan will pay for the service
+NET_AMT,Net Amount,Net payment amount after all adjustments
+INELIG_AMT,Ineligible Amount,Amount not covered due to plan exclusions
+COB_AMT,COB Amount,Coordination of Benefits amount from other insurance
+OTHER_RED_AMT,Other Reduced Amount,Other reductions or adjustments to the claim
+DENIED_AMT,Denied Amount,Amount denied due to claim errors or policy limits
+PAID_AMT,Paid Amount,Final amount paid by the insurance plan
+SVC_LINE_TYP,Service Line/Claim Type,Type of service line (e.g. Medical Pharmacy Dental)
+PAYEE_NM,Payee Name,Name of the entity receiving payment
+PAYEE_ADDR,Payee Address,Mailing address of the payee
+PAYEE_TIN,Payee TIN,Tax Identification Number of the payee
