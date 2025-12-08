@@ -1,4 +1,4 @@
-# Healthcare Field Mappings Manager
+# Field Mapper - Data Mapping Application
 import streamlit as st
 import pandas as pd
 from snowflake.snowpark.context import get_active_session
@@ -42,7 +42,7 @@ if 'changes_made' not in st.session_state:
     st.session_state.changes_made = False
 
 # Default LLM prompt template
-DEFAULT_LLM_PROMPT = """You are a healthcare data expert helping to map source columns to target schema fields.
+DEFAULT_LLM_PROMPT = """You are a data mapping expert helping to map source columns to target schema fields.
 
 SOURCE COLUMNS (from uploaded file):
 {source_list}
@@ -52,7 +52,7 @@ TARGET FIELDS (standard schema):
 
 TASK: For each source column, determine the best matching target field based on:
 1. Semantic meaning (e.g., "DOB" matches "Date of Birth", "Claimant DOB")
-2. Common healthcare abbreviations (e.g., "CPT", "ICD", "NPI", "Rx")
+2. Common abbreviations (e.g., "ID", "NUM", "AMT", "DT")
 3. Field naming patterns (e.g., "amt" = "Amount", "dt" = "Date")
 
 IMPORTANT RULES:
@@ -330,7 +330,7 @@ with tab2:
                 ),
                 "TARGET": st.column_config.SelectboxColumn(
                     "Target Field Name",
-                    help="Standardized healthcare field name",
+                    help="Standardized target field name",
                     options=get_unique_targets(),
                     required=True
                 ),
@@ -457,7 +457,7 @@ with tab2:
             st.download_button(
                 label="📥 Download as CSV",
                 data=csv_data,
-                file_name="healthcare_field_mappings.csv",
+                file_name="field_mappings.csv",
                 mime="text/csv"
             )
 
@@ -529,7 +529,7 @@ with tab3:
         
         st.write("**Quick Test Examples**")
         example_sets = {
-            "Healthcare Common": ["Patient Name", "DOB", "Policy Number", "Claim Amount", "Provider ID"],
+            "Common Fields": ["First Name", "Last Name", "Date", "Amount", "ID Number"],
             "Variations & Typos": ["Patien_Name", "Birth_Dt", "Plcy_Start", "Tot_Amt", "Diag_Code"],
             "Abbreviations": ["Pt_Name", "DOB", "Pol_Eff", "Billed_Amt", "NPI"]
         }
@@ -1007,7 +1007,7 @@ with tab1:
         st.subheader("Step 1: Upload Your Data File")
         
         # Instructions box
-        st.info("📁 **Upload a file** containing your claims data. The first row should contain column headers.")
+        st.info("📁 **Upload a file** containing your data. The first row should contain column headers.")
         
         uploaded_file = st.file_uploader(
             "Choose a CSV, TXT, or Excel file",
@@ -1751,7 +1751,7 @@ with st.expander("ℹ️ Help & Instructions"):
     - **TF-IDF Enhancement (30%)**: Semantic similarity boost using machine learning
     
     **Tips:**
-    - Target fields are standardized healthcare terms (not editable)
+    - Target fields are standardized field names (not editable)
     - Source fields can be customized to match your data sources
     - Higher confidence scores indicate better matches
     - The file upload tab auto-suggests mappings based on the matching algorithm

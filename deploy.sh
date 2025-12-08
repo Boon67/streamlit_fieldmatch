@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Healthcare Field Mappings Manager - Snowflake Deployment Script
+# Field Mapper - Snowflake Deployment Script
 # This script deploys the Streamlit app and stored procedure to Snowflake using Snow CLI
 
 set -e

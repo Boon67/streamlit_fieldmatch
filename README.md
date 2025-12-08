@@ -1,6 +1,8 @@
-# Field Mapper - Healthcare Field Mapping Application
+# Field Mapper - Intelligent Data Mapping Application
 
-A Streamlit in Snowflake (SiS) application for intelligent field mapping in healthcare claims data processing. Field Mapper automates the tedious process of mapping source data columns to standardized target schemas using both algorithmic matching and AI-powered recommendations.
+A Streamlit in Snowflake (SiS) application for intelligent field mapping and data transformation. Field Mapper automates the tedious process of mapping source data columns to standardized target schemas using both algorithmic matching and AI-powered recommendations.
+
+![Field Mapper Demo](images/FieldMatchDemo.gif)
 
 ## Table of Contents
 
@@ -20,7 +22,7 @@ A Streamlit in Snowflake (SiS) application for intelligent field mapping in heal
 
 ## Overview
 
-Field Mapper solves the common challenge of mapping healthcare claims data from various sources (insurance companies, TPAs, providers) to a standardized target schema. It offers two matching approaches:
+Field Mapper solves the common challenge of mapping data from various sources to a standardized target schema. It offers two matching approaches:
 
 1. **Pattern Match/ML**: Uses `field_matcher_advanced` with TF-IDF similarity algorithms
 2. **LLM Matching**: Uses Snowflake Cortex AI models for intelligent semantic matching
@@ -81,7 +83,7 @@ streamlit_fieldmatch/
 ├── mapping_proc.sql         # field_matcher_advanced stored procedure
 ├── mappings.csv             # Initial field mappings (SRC, TARGET, DESCRIPTION)
 ├── generate_sample_data.py  # Sample data generation script
-├── sample_data/             # Generated sample claims files
+├── sample_data/             # Generated sample data files
 │   ├── anthem_bluecross-claims-20240115.csv
 │   ├── unitedhealth-claims-20240201.csv
 │   ├── cigna_healthcare-claims-20240215.xlsx
@@ -442,18 +444,17 @@ BILLED_AMT,Billed Amount,Total amount billed by the provider for services
 
 ### Pre-loaded Field Categories
 
-| Category | Target Fields |
-|----------|---------------|
-| **Policy** | Policy Effective Date, Group Name, Product Type |
-| **Insured** | Insured First Name, Insured Last Name, Insured DOB |
-| **Claimant** | Claimant First Name, Claimant Last Name, Claimant DOB |
-| **Claim** | Claim Number/Claim Control Number, Beginning Service Date, Ending Service Date, Processed Date |
-| **Diagnosis** | Primary ICD, Secondary ICD |
-| **Procedure** | CPT Code, HCPCS Code, Revenue Code, Modifier Code |
-| **Provider** | NPI?, Payee Name, Payee Address, Payee TIN |
-| **Pharmacy** | Rx Name, Rx Quantity, Rx Days Supply, Rx Date Filled |
-| **Amounts** | Billed Amount, Copay Amount, Deductible Amount, Coinsurance Amount, Allowed Amount, Net Amount, Ineligible Amount, COB Amount, Other Reduced Amount, Denied Amount, Paid Amount |
-| **Other** | Service Line/Claim Type |
+The default `mappings.csv` includes sample field mappings. You can customize these for your specific domain by editing the CSV file or using the Edit Mappings tab in the application.
+
+| Category | Example Target Fields |
+|----------|----------------------|
+| **Dates** | Effective Date, Start Date, End Date, Processed Date |
+| **Names** | First Name, Last Name, Full Name |
+| **Identifiers** | ID, Reference Number, Control Number |
+| **Amounts** | Total Amount, Net Amount, Paid Amount |
+| **Codes** | Type Code, Status Code, Category |
+
+**Note:** The mappings are fully customizable. Edit `mappings.csv` or use the application UI to define mappings specific to your data domain.
 
 ### Adding New Mappings
 
@@ -552,8 +553,8 @@ This ensures you always see the models available in your specific Snowflake regi
 
 ### LLM Matching Features
 
-- **Semantic Understanding**: Recognizes healthcare abbreviations (DOB, NPI, CPT, ICD, Rx)
-- **Pattern Recognition**: Understands naming conventions (amt=Amount, dt=Date)
+- **Semantic Understanding**: Recognizes common abbreviations and domain-specific terms
+- **Pattern Recognition**: Understands naming conventions (amt=Amount, dt=Date, id=Identifier)
 - **Duplicate Prevention**: Ensures each target is mapped only once
 - **Confidence Scoring**: Returns confidence levels for each mapping
 - **Customizable Prompts**: Edit the prompt template in LLM Settings tab
@@ -576,22 +577,21 @@ python3 generate_sample_data.py
 
 ### Generated Files
 
-| File | Format | Records | Column Style | Claim Type |
-|------|--------|---------|--------------|------------|
-| `anthem_bluecross-claims-20240115.csv` | CSV | ~1,000 | `UPPERCASE_UNDERSCORES` | Medical |
-| `unitedhealth-claims-20240201.csv` | CSV | ~1,000 | `CamelCase` | Pharmacy |
-| `cigna_healthcare-claims-20240215.xlsx` | Excel | ~1,000 | `Spaces In Names` | Mixed |
-| `aetna_dental-claims-20240301.csv` | CSV | ~1,000 | `ABBREVIATED_CAPS` | Dental |
-| `kaiser_permanente-claims-20240315.xlsx` | Excel | ~1,000 | `CamelCase` | Vision |
+| File | Format | Records | Column Style |
+|------|--------|---------|--------------|
+| `anthem_bluecross-claims-20240115.csv` | CSV | ~1,000 | `UPPERCASE_UNDERSCORES` |
+| `unitedhealth-claims-20240201.csv` | CSV | ~1,000 | `CamelCase` |
+| `cigna_healthcare-claims-20240215.xlsx` | Excel | ~1,000 | `Spaces In Names` |
+| `aetna_dental-claims-20240301.csv` | CSV | ~1,000 | `ABBREVIATED_CAPS` |
+| `kaiser_permanente-claims-20240315.xlsx` | Excel | ~1,000 | `CamelCase` |
 
 ### Sample Data Contents
 
-- **Demographics**: Patient/subscriber names, dates of birth
-- **Identifiers**: Claim numbers, NPI numbers, TINs
-- **Dates**: Service dates, processed dates, fill dates
-- **Codes**: ICD-10, CPT, HCPCS, CDT, Revenue codes
-- **Amounts**: Billed, allowed, deductible, copay, coinsurance, paid
-- **Provider Info**: Names, addresses, tax IDs
+- **Names**: First name, last name, full name variations
+- **Identifiers**: Reference numbers, control numbers, IDs
+- **Dates**: Various date formats and naming conventions
+- **Amounts**: Numeric fields with different naming patterns
+- **Codes**: Category codes, type codes, status fields
 
 ## Troubleshooting
 
@@ -657,7 +657,7 @@ pip install pandas numpy openpyxl scikit-learn
 
 ## License
 
-This project is provided as-is for healthcare data processing workflows.
+This project is provided as-is for data mapping and transformation workflows.
 
 ## Support
 
