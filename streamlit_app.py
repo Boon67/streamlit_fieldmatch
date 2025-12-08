@@ -92,10 +92,10 @@ def get_available_llm_models():
             return models_df['MODEL_NAME'].tolist()
         else:
             # Fallback to common models if query returns empty
-            return ["claude-4-sonnet", "llama3.1-70b", "mistral-large2", "mistral-7b"]
+            return ["SNOWFLAKE-ARCTIC", "llama3.1-70b", "mistral-large2", "mistral-7b"]
     except Exception as e:
         # Fallback to common models if query fails
-        return ["claude-4-sonnet", "llama3.1-70b", "mistral-large2", "mistral-7b"]
+        return ["SNOWFLAKE-ARCTIC", "llama3.1-70b", "mistral-large2", "mistral-7b"]
 
 def get_unique_targets():
     """Get list of unique target field names"""
@@ -1186,6 +1186,10 @@ with tab1:
                         st.session_state.auto_mappings_raw_result = llm_response
                         st.session_state.matching_method_used = "LLM"
                         st.session_state.llm_model_used = selected_model
+                        # Clear existing selectbox states so new mappings are applied
+                        keys_to_clear = [k for k in st.session_state.keys() if k.startswith("map_")]
+                        for k in keys_to_clear:
+                            del st.session_state[k]
                     st.rerun()
         
         # Update auto_mappings based on method (for display purposes)
@@ -1377,8 +1381,8 @@ with tab1:
                 st.markdown('</div>', unsafe_allow_html=True)
             
             with col3:
-                # Only show confidence if score meets threshold
-                if suggested_target and suggested_score >= mapping_threshold:
+                # Only show confidence if column is mapped (not Ignored) and score meets threshold
+                if selected_target and selected_target != "(Ignored)" and suggested_target and suggested_score >= mapping_threshold:
                     # Show confidence with color-coded indicator and percentage
                     if suggested_score >= 0.8:
                         st.success(f"🟢 {suggested_score:.1%}")
@@ -1386,6 +1390,8 @@ with tab1:
                         st.warning(f"🟡 {suggested_score:.1%}")
                     else:
                         st.error(f"🔴 {suggested_score:.1%}")
+                elif selected_target == "(Ignored)":
+                    st.write("")  # Empty for ignored columns
                 else:
                     st.write("—")
             
@@ -1417,6 +1423,10 @@ with tab1:
                                 st.session_state.auto_mappings = mappings
                                 st.session_state.auto_mappings_sql = sql_query
                                 st.session_state.auto_mappings_raw_result = raw_result
+                                # Clear existing selectbox states so new mappings are applied
+                                keys_to_clear = [k for k in st.session_state.keys() if k.startswith("map_")]
+                                for k in keys_to_clear:
+                                    del st.session_state[k]
                                 st.rerun()
                         except Exception as e:
                             st.error(f"❌ Error: {str(e)[:50]}")
@@ -1969,7 +1979,7 @@ with tab5:
         available_models = get_available_llm_models()
         
         # Find current default model index
-        current_default = get_config_value('DEFAULT_LLM_MODEL', 'CLAUDE-4-SONNET')
+        current_default = get_config_value('DEFAULT_LLM_MODEL', 'SNOWFLAKE-ARCTIC')
         default_model_index = 0
         if current_default in available_models:
             default_model_index = available_models.index(current_default)
