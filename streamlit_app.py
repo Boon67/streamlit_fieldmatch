@@ -6,8 +6,20 @@ from snowflake.snowpark.context import get_active_session
 # Initialize Snowflake session
 session = get_active_session()
 
-st.title("ClaimsIQ 🏥")
-st.write("Healthcare claims field mapping and data processing")
+# Get app name from config table (with fallback)
+def get_app_name():
+    """Get app name from APP_CONFIG table"""
+    try:
+        result = session.sql("SELECT CONFIG_VALUE FROM APP_CONFIG WHERE CONFIG_KEY = 'APP_NAME'").collect()
+        if result and len(result) > 0:
+            return result[0][0]
+    except:
+        pass
+    return "Field Mapper"  # Default fallback
+
+APP_NAME = get_app_name()
+st.title(f"{APP_NAME} 🏥")
+st.write("Data Ingest Mapping & Processing")
 
 # Create tabs
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 Upload & Map File", "📝 Edit Mappings", "🔍 Test Matches", "📊 View Tables", "🤖 LLM Settings"])
@@ -47,11 +59,11 @@ if 'llm_prompt_template' not in st.session_state:
 def load_mappings_data():
     """Load current mappings data from Snowflake"""
     try:
-        df = session.sql("SELECT SRC, TARGET FROM PROCESSOR.mappings_list ORDER BY TARGET, SRC").to_pandas()
+        df = session.sql("SELECT SRC, TARGET, DESCRIPTION FROM mappings_list ORDER BY TARGET, SRC").to_pandas()
         return df
     except Exception as e:
         st.error(f"Error loading data: {str(e)}")
-        return pd.DataFrame(columns=['SRC', 'TARGET'])
+        return pd.DataFrame(columns=['SRC', 'TARGET', 'DESCRIPTION'])
 
 def get_available_llm_models():
     """Get list of available Cortex LLM models from Snowflake"""
@@ -77,11 +89,19 @@ def get_available_llm_models():
 def get_unique_targets():
     """Get list of unique target field names"""
     try:
-        targets = session.sql("SELECT DISTINCT TARGET FROM PROCESSOR.mappings_list ORDER BY TARGET").to_pandas()
+        targets = session.sql("SELECT DISTINCT TARGET FROM mappings_list ORDER BY TARGET").to_pandas()
         return targets['TARGET'].tolist()
     except Exception as e:
         st.error(f"Error loading target fields: {str(e)}")
         return []
+
+def get_current_schema_name():
+    """Get the current schema name from the session"""
+    try:
+        result = session.sql("SELECT CURRENT_SCHEMA()").collect()
+        return result[0][0] if result else "PROCESSOR"
+    except:
+        return "PROCESSOR"
 
 def save_changes(updated_df, original_df):
     """Save changes to Snowflake table"""
@@ -96,13 +116,31 @@ def save_changes(updated_df, original_df):
         # Delete removed records
         for src, target in to_delete:
             # Use parameterized queries to prevent SQL injection
-            delete_sql = "DELETE FROM PROCESSOR.mappings_list WHERE SRC = ? AND TARGET = ?"
+            delete_sql = "DELETE FROM mappings_list WHERE SRC = ? AND TARGET = ?"
             session.sql(delete_sql, params=[src, target]).collect()
         
-        # Insert new records
+        # Insert new records (with description if available)
         for src, target in to_insert:
-            insert_sql = "INSERT INTO PROCESSOR.mappings_list (SRC, TARGET) VALUES (?, ?)"
-            session.sql(insert_sql, params=[src, target]).collect()
+            # Find the description for this record
+            desc_row = updated_df[(updated_df['SRC'] == src) & (updated_df['TARGET'] == target)]
+            description = desc_row['DESCRIPTION'].iloc[0] if len(desc_row) > 0 and 'DESCRIPTION' in desc_row.columns and pd.notna(desc_row['DESCRIPTION'].iloc[0]) else ''
+            insert_sql = "INSERT INTO mappings_list (SRC, TARGET, DESCRIPTION) VALUES (?, ?, ?)"
+            session.sql(insert_sql, params=[src, target, description]).collect()
+        
+        # Update descriptions for existing records that may have changed
+        existing_pairs = original_pairs & updated_pairs
+        for src, target in existing_pairs:
+            updated_row = updated_df[(updated_df['SRC'] == src) & (updated_df['TARGET'] == target)]
+            original_row = original_df[(original_df['SRC'] == src) & (original_df['TARGET'] == target)]
+            if len(updated_row) > 0 and len(original_row) > 0:
+                new_desc = updated_row['DESCRIPTION'].iloc[0] if 'DESCRIPTION' in updated_row.columns else ''
+                old_desc = original_row['DESCRIPTION'].iloc[0] if 'DESCRIPTION' in original_row.columns else ''
+                # Handle NaN values
+                new_desc = '' if pd.isna(new_desc) else new_desc
+                old_desc = '' if pd.isna(old_desc) else old_desc
+                if new_desc != old_desc:
+                    update_sql = "UPDATE mappings_list SET DESCRIPTION = ? WHERE SRC = ? AND TARGET = ?"
+                    session.sql(update_sql, params=[new_desc, src, target]).collect()
         
         return True, len(to_delete), len(to_insert)
     except Exception as e:
@@ -117,7 +155,7 @@ def test_field_matches(field_list, top_n=3, min_threshold=0.1):
         
         # Call the stored procedure with full schema path
         sql_query = f"""
-        CALL CLAIMSIQ.PROCESSOR.field_matcher_advanced(
+        CALL field_matcher_advanced(
             {formatted_fields}, 
             {top_n}, 
             {min_threshold}
@@ -284,6 +322,11 @@ with tab2:
                     help="Standardized healthcare field name",
                     options=get_unique_targets(),
                     required=True
+                ),
+                "DESCRIPTION": st.column_config.TextColumn(
+                    "Description",
+                    help="Description of what this field contains",
+                    required=False
                 )
             },
             key="data_editor"
@@ -528,7 +571,7 @@ with tab3:
             # Show SQL that would be executed
             escaped_fields = [field.replace("'", "''") for field in test_field_list]
             formatted_fields = "['" + "', '".join(escaped_fields) + "']"
-            sql_preview = f"""CALL CLAIMSIQ.PROCESSOR.field_matcher_advanced(
+            sql_preview = f"""CALL field_matcher_advanced(
     {formatted_fields},
     {top_n},
     {min_threshold}
@@ -715,7 +758,7 @@ with tab1:
             
             # Call the stored procedure to get best matches (top 1 match per field)
             # Use fully qualified name: DATABASE.SCHEMA.PROCEDURE
-            sql_query = f"""CALL CLAIMSIQ.PROCESSOR.field_matcher_advanced(
+            sql_query = f"""CALL field_matcher_advanced(
     {formatted_fields}, 
     1, 
     0.1
@@ -867,9 +910,13 @@ with tab1:
         name = name.upper()[:128]
         return name
     
-    def create_mapped_table(df, column_mapping, table_name, schema="PROCESSOR"):
+    def create_mapped_table(df, column_mapping, table_name, schema=None):
         """Create a new table with ALL target columns and insert mapped data"""
         try:
+            # Use current schema if not specified
+            if schema is None:
+                schema = get_current_schema_name()
+            
             # Get all target fields from the mappings table
             all_target_fields = get_unique_targets()
             
@@ -1322,7 +1369,7 @@ with tab1:
                         try:
                             # Check if mapping already exists
                             check_sql = f"""
-                            SELECT COUNT(*) as cnt FROM PROCESSOR.MAPPINGS_LIST 
+                            SELECT COUNT(*) as cnt FROM MAPPINGS_LIST 
                             WHERE SRC = '{src_col.replace("'", "''")}' 
                             AND TARGET = '{selected_target.replace("'", "''")}'
                             """
@@ -1333,7 +1380,7 @@ with tab1:
                             else:
                                 # Insert new mapping
                                 insert_sql = f"""
-                                INSERT INTO PROCESSOR.MAPPINGS_LIST (SRC, TARGET) 
+                                INSERT INTO MAPPINGS_LIST (SRC, TARGET) 
                                 VALUES ('{src_col.replace("'", "''")}', '{selected_target.replace("'", "''")}')
                                 """
                                 session.sql(insert_sql).collect()
@@ -1434,12 +1481,12 @@ with tab1:
         with config_col2:
             schema_name = st.text_input(
                 "📂 Schema",
-                value="PROCESSOR",
+                value=get_current_schema_name(),
                 help="The schema where the table will be created"
             )
         
         # Show full table path
-        st.info(f"📍 **Full table path:** `CLAIMSIQ.{schema_name}.{table_name}`")
+        st.info(f"📍 **Full table path:** `{schema_name}.{table_name}`")
         
         st.write("---")
         
@@ -1655,7 +1702,7 @@ with st.expander("ℹ️ Help & Instructions"):
     - **Step 4 - Complete**: Table is created with mapped data
     
     **View Tables Tab:**
-    - **Browse Tables**: View all tables in the PROCESSOR schema
+    - **Browse Tables**: View all tables in the current schema
     - **Inspect Data**: Preview table contents and structure
     - **Table Details**: View row counts, column info, and creation dates
     
@@ -1677,21 +1724,32 @@ with st.expander("ℹ️ Help & Instructions"):
 # TAB 4: View Tables
 with tab4:
     st.subheader("📊 View Tables")
-    st.write("Browse and inspect tables created in the PROCESSOR schema")
+    st.write("Browse and inspect tables created in the current schema")
+    
+    # Get current schema name
+    def get_current_schema():
+        """Get the current schema name from the session"""
+        try:
+            result = session.sql("SELECT CURRENT_SCHEMA()").collect()
+            return result[0][0] if result else "PROCESSOR"
+        except:
+            return "PROCESSOR"
+    
+    current_schema = get_current_schema()
     
     # Function to get list of tables
     def get_schema_tables():
-        """Get list of tables in the PROCESSOR schema"""
+        """Get list of tables in the current schema"""
         try:
-            tables_query = """
+            tables_query = f"""
             SELECT 
                 TABLE_NAME,
                 ROW_COUNT,
                 BYTES,
                 CREATED,
                 LAST_ALTERED
-            FROM CLAIMSIQ.INFORMATION_SCHEMA.TABLES 
-            WHERE TABLE_SCHEMA = 'PROCESSOR'
+            FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_SCHEMA = '{current_schema}'
             AND TABLE_TYPE = 'BASE TABLE'
             ORDER BY CREATED DESC
             """
@@ -1711,8 +1769,8 @@ with tab4:
                 DATA_TYPE,
                 IS_NULLABLE,
                 ORDINAL_POSITION
-            FROM CLAIMSIQ.INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_SCHEMA = 'PROCESSOR'
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = '{current_schema}'
             AND TABLE_NAME = '{table_name}'
             ORDER BY ORDINAL_POSITION
             """
@@ -1726,7 +1784,7 @@ with tab4:
     def preview_table_data(table_name, limit=100):
         """Preview data from a table"""
         try:
-            preview_query = f'SELECT * FROM PROCESSOR."{table_name}" LIMIT {limit}'
+            preview_query = f'SELECT * FROM "{table_name}" LIMIT {limit}'
             result = session.sql(preview_query).to_pandas()
             return result
         except Exception as e:
@@ -1741,7 +1799,7 @@ with tab4:
     tables_df = get_schema_tables()
     
     if tables_df is not None and len(tables_df) > 0:
-        st.write(f"**Found {len(tables_df)} tables in CLAIMSIQ.PROCESSOR**")
+        st.write(f"**Found {len(tables_df)} tables in {current_schema}**")
         
         # Display table list with metrics
         st.write("---")
@@ -1854,7 +1912,7 @@ with tab4:
                     
                     if st.button("🗑️ Delete Table", type="secondary", disabled=not confirm_delete):
                         try:
-                            delete_sql = f'DROP TABLE IF EXISTS PROCESSOR."{selected_table}"'
+                            delete_sql = f'DROP TABLE IF EXISTS "{selected_table}"'
                             session.sql(delete_sql).collect()
                             # Clear the checkbox state before rerun
                             if f"delete_confirm_{selected_table}" in st.session_state:
@@ -1865,7 +1923,7 @@ with tab4:
                             st.error(f"❌ Error deleting table: {str(e)}")
     
     else:
-        st.info("No tables found in CLAIMSIQ.PROCESSOR schema. Upload and map a file to create your first table!")
+        st.info(f"No tables found in {current_schema} schema. Upload and map a file to create your first table!")
 
 # TAB 5: LLM Settings
 with tab5:

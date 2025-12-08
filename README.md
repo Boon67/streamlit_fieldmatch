@@ -1,6 +1,6 @@
-# ClaimsIQ - Healthcare Field Mapping Application
+# Field Mapper - Healthcare Field Mapping Application
 
-A Streamlit in Snowflake (SiS) application for intelligent field mapping in healthcare claims data processing. ClaimsIQ automates the tedious process of mapping source data columns to standardized target schemas using both algorithmic matching and AI-powered recommendations.
+A Streamlit in Snowflake (SiS) application for intelligent field mapping in healthcare claims data processing. Field Mapper automates the tedious process of mapping source data columns to standardized target schemas using both algorithmic matching and AI-powered recommendations.
 
 ## Table of Contents
 
@@ -10,6 +10,7 @@ A Streamlit in Snowflake (SiS) application for intelligent field mapping in heal
 - [Prerequisites](#prerequisites)
 - [Deployment](#deployment)
 - [Configuration](#configuration)
+- [RBAC Setup](#rbac-setup)
 - [Usage Guide](#usage-guide)
 - [Field Mappings](#field-mappings)
 - [Matching Algorithms](#matching-algorithms)
@@ -19,9 +20,9 @@ A Streamlit in Snowflake (SiS) application for intelligent field mapping in heal
 
 ## Overview
 
-ClaimsIQ solves the common challenge of mapping healthcare claims data from various sources (insurance companies, TPAs, providers) to a standardized target schema. It offers two matching approaches:
+Field Mapper solves the common challenge of mapping healthcare claims data from various sources (insurance companies, TPAs, providers) to a standardized target schema. It offers two matching approaches:
 
-1. **Stored Procedure Matching**: Uses `field_matcher_advanced` with TF-IDF similarity algorithms
+1. **Pattern Match/ML**: Uses `field_matcher_advanced` with TF-IDF similarity algorithms
 2. **LLM Matching**: Uses Snowflake Cortex AI models for intelligent semantic matching
 
 The application supports CSV, TXT, and Excel files, and creates standardized tables in Snowflake with consistent column structures.
@@ -30,8 +31,8 @@ The application supports CSV, TXT, and Excel files, and creates standardized tab
 
 ### 📤 Upload & Map File
 - **Multi-format Support**: Upload CSV, TXT (tab/pipe/comma delimited), or Excel (XLS/XLSX) files
-- **Dual Matching Methods**: Choose between Stored Procedure or LLM-based matching
-- **LLM Model Selection**: Select from multiple Cortex AI models (Snowflake Arctic, Mistral, Llama, Gemma)
+- **Dual Matching Methods**: Choose between Pattern Match/ML or LLM-based matching
+- **LLM Model Selection**: Select from available Cortex AI models (dynamically fetched from Snowflake)
 - **Confidence Threshold Slider**: Adjust auto-mapping sensitivity (0.0-1.0)
 - **Visual Confidence Indicators**: Color-coded scores (🟢 High ≥0.8, 🟡 Medium 0.5-0.8, 🔴 Low <0.5)
 - **Duplicate Detection**: Warns when multiple source columns map to the same target
@@ -54,7 +55,7 @@ The application supports CSV, TXT, and Excel files, and creates standardized tab
 - **Results Export**: Download matching results as CSV
 
 ### 📊 View Tables
-- **Table Browser**: View all tables in the PROCESSOR schema
+- **Table Browser**: View all tables in the schema
 - **Data Preview**: Preview table contents with configurable row limits
 - **Schema Inspector**: View column names, data types, and positions
 - **Table Metrics**: Row counts, storage size, creation/modification dates
@@ -75,6 +76,8 @@ streamlit_fieldmatch/
 ├── environment.yml           # Python dependencies for Snowflake
 ├── snowflake.yml            # Snowflake project configuration
 ├── deploy.sh                # Automated deployment script
+├── deploy.config            # Deployment configuration file
+├── setup_rbac.sql           # RBAC role hierarchy setup script
 ├── mapping_proc.sql         # field_matcher_advanced stored procedure
 ├── mappings.csv             # Initial field mappings (SRC, TARGET, DESCRIPTION)
 ├── generate_sample_data.py  # Sample data generation script
@@ -92,7 +95,8 @@ streamlit_fieldmatch/
 ### Snowflake Requirements
 - Snowflake account with appropriate privileges
 - Warehouse for running queries
-- Privileges to create: databases, schemas, tables, stored procedures, Streamlit apps
+- For full RBAC setup: SECURITYADMIN and SYSADMIN role access
+- For basic setup: Privileges to create databases, schemas, tables, stored procedures, Streamlit apps
 
 ### Local Requirements
 - [Snow CLI](https://docs.snowflake.com/en/developer-guide/snowflake-cli-v2/index) installed and configured
@@ -112,30 +116,50 @@ pip install pandas numpy openpyxl scikit-learn
 # 1. Clone or download the project
 cd streamlit_fieldmatch
 
-# 2. Make deploy script executable
+# 2. Edit configuration (optional)
+nano deploy.config
+
+# 3. Make deploy script executable
 chmod +x deploy.sh
 
-# 3. Run deployment
+# 4. Run deployment (interactive)
 ./deploy.sh
+
+# Or run with defaults (non-interactive)
+./deploy.sh --defaults
 ```
 
 ### What the Deploy Script Does
 
-1. **Creates Database & Schema**: `CLAIMSIQ.PROCESSOR`
-2. **Creates Mappings Table**: `MAPPINGS_LIST` with SRC, TARGET, DESCRIPTION columns
-3. **Loads Initial Mappings**: Reads from `mappings.csv` using MERGE (upsert)
-4. **Deploys Stored Procedure**: Reads from `mapping_proc.sql`
-5. **Deploys Streamlit App**: Uses Snow CLI to deploy the application
-6. **Outputs App URL**: Provides link to access the application
+1. **Sets up RBAC Roles**: Creates a 3-tier role hierarchy (see [RBAC Setup](#rbac-setup) below)
+2. **Creates Database & Schema**: Based on configuration
+3. **Creates Mappings Table**: `MAPPINGS_LIST` with SRC, TARGET, DESCRIPTION columns
+4. **Loads Initial Mappings**: Reads from `mappings.csv` using MERGE (upsert)
+5. **Deploys Stored Procedure**: Reads from `mapping_proc.sql`
+6. **Deploys Streamlit App**: Uses Snow CLI to deploy the application
+7. **Outputs App URL**: Provides link to access the application
 
 ### Deployment Output Example
 
 ```
 ╔════════════════════════════════════════════════════════════╗
-║              ClaimsIQ - Snowflake Deployment               ║
+║           Field Mapper - Snowflake Deployment              ║
 ╚════════════════════════════════════════════════════════════╝
 
 ✓ Snowflake CLI found
+
+📋 Configuration (from deploy.config):
+
+   Database:  FIELD_MAPPER
+   Schema:    PROCESSOR
+   Warehouse: COMPUTE_WH
+   App Name:  Field Mapper
+   App ID:    FIELD_MAPPER
+
+Use these values? (Y/n): 
+
+Starting deployment...
+
 📦 Step 1: Setting up database and schema...
 ✓ Database and schema ready
 📋 Step 2: Creating mappings table...
@@ -151,39 +175,157 @@ chmod +x deploy.sh
 ║                    Deployment Complete!                     ║
 ╚════════════════════════════════════════════════════════════╝
 
-📍 Database: CLAIMSIQ
-📍 Schema:   PROCESSOR
-📍 App:      CLAIMSIQ_APP
+📍 Database:  FIELD_MAPPER
+📍 Schema:    PROCESSOR
+📍 Warehouse: COMPUTE_WH
+📍 App Name:  Field Mapper
+📍 App ID:    FIELD_MAPPER
 🌐 Open Snowsight and navigate to Streamlit to view the app
 ```
 
 ## Configuration
 
-### Deploy Script Variables
+### Configuration File: deploy.config
 
-Edit `deploy.sh` to customize:
+Edit `deploy.config` to customize your deployment:
 
 ```bash
-DATABASE="CLAIMSIQ"           # Target database name
-SCHEMA="PROCESSOR"            # Target schema name
-WAREHOUSE="COMPUTE_WH"        # Warehouse for queries (update this!)
+# Field Mapper Deployment Configuration
+# Edit these values to customize your deployment
+
+# Snowflake Database name
+DATABASE="FIELD_MAPPER"
+
+# Snowflake Schema name
+SCHEMA="PROCESSOR"
+
+# Snowflake Warehouse name
+WAREHOUSE="COMPUTE_WH"
+
+# Streamlit App name (displayed in Snowsight)
+APP_NAME="Field Mapper"
+
+# Streamlit App identifier (used in Snowflake, no spaces)
+APP_ID="FIELD_MAPPER"
+```
+
+### Configuration Options
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `DATABASE` | Snowflake database name | `FIELD_MAPPER` |
+| `SCHEMA` | Snowflake schema name | `PROCESSOR` |
+| `WAREHOUSE` | Warehouse for queries | `COMPUTE_WH` |
+| `APP_NAME` | Display name in Snowsight | `Field Mapper` |
+| `APP_ID` | Snowflake object identifier (no spaces) | `FIELD_MAPPER` |
+
+### Interactive vs Non-Interactive Deployment
+
+**Interactive Mode** (default):
+```bash
+./deploy.sh
+```
+- Shows current configuration from `deploy.config`
+- Asks if you want to use these values or customize
+- Allows entering custom values for each parameter
+- Confirms before proceeding
+
+**Non-Interactive Mode**:
+```bash
+./deploy.sh --defaults
+# or
+./deploy.sh -y
+```
+- Uses values from `deploy.config` without prompting
+- Useful for CI/CD pipelines and automated deployments
+
+## RBAC Setup
+
+The deployment script automatically creates a 3-tier Role-Based Access Control (RBAC) hierarchy for the database. This provides granular access control following Snowflake best practices.
+
+### Role Hierarchy
+
+```
+<DATABASE>_ADMIN (Full administrative access)
+    ↓ inherits
+<DATABASE>_READWRITE (Read and write access)
+    ↓ inherits
+<DATABASE>_READONLY (Read-only access)
+```
+
+For example, with `DATABASE=FIELD_MAPPER`:
+- `FIELD_MAPPER_ADMIN` - Full control over database objects
+- `FIELD_MAPPER_READWRITE` - Can read, write, and create objects
+- `FIELD_MAPPER_READONLY` - Can only read data
+
+### Role Privileges
+
+| Role | Privileges |
+|------|------------|
+| `<DB>_READONLY` | SELECT on tables/views, USAGE on functions/procedures, READ on stages |
+| `<DB>_READWRITE` | All READONLY privileges + INSERT/UPDATE/DELETE/TRUNCATE, CREATE TABLE/VIEW/STAGE/FUNCTION/PROCEDURE |
+| `<DB>_ADMIN` | All READWRITE privileges + DROP/ALTER, CREATE SCHEMA, database ownership |
+
+### Automatic User Assignment
+
+The deployment script automatically:
+1. Detects the current Snowflake user running the deployment
+2. Assigns that user to the `<DATABASE>_ADMIN` role
+3. Grants the admin role to SYSADMIN for management
+
+### RBAC File: setup_rbac.sql
+
+The RBAC setup is defined in `setup_rbac.sql` with placeholders:
+- `{{DATABASE}}` - Database name from config
+- `{{SCHEMA}}` - Schema name from config
+- `{{WAREHOUSE}}` - Warehouse name from config
+- `{{CURRENT_USER}}` - User running the deployment
+
+### Required Privileges for RBAC Setup
+
+Full RBAC setup requires:
+- **SECURITYADMIN**: For creating roles and granting role memberships
+- **SYSADMIN**: For creating database and granting object privileges
+
+If these privileges are not available, the script falls back to basic database/schema creation.
+
+### Manual Role Assignment
+
+To assign roles to other users after deployment:
+
+```sql
+-- Use SECURITYADMIN to grant roles
+USE ROLE SECURITYADMIN;
+
+-- Grant read-only access
+GRANT ROLE FIELD_MAPPER_READONLY TO USER analyst_user;
+
+-- Grant read-write access
+GRANT ROLE FIELD_MAPPER_READWRITE TO USER data_engineer;
+
+-- Grant admin access
+GRANT ROLE FIELD_MAPPER_ADMIN TO USER database_admin;
 ```
 
 ### Snowflake Project Configuration
 
-The `snowflake.yml` file configures the Streamlit deployment:
+The `snowflake.yml` file uses environment variables from the deploy script:
 
 ```yaml
 definition_version: 2
+
 entities:
-  claimsiq_app:
+  streamlit_app:
     type: streamlit
     identifier:
-      name: claimsiq_app
-    title: "ClaimsIQ - Healthcare Field Mapping"
-    query_warehouse: COMPUTE_WH
+      name: <% ctx.env.APP_ID %>
+    title: <% ctx.env.APP_NAME %>
+    query_warehouse: <% ctx.env.SNOWFLAKE_WAREHOUSE %>
     main_file: streamlit_app.py
-    env_file: environment.yml
+    stage: STREAMLIT_STAGE
+    artifacts:
+      - streamlit_app.py
+      - environment.yml
 ```
 
 ## Usage Guide
@@ -198,7 +340,7 @@ entities:
 
 #### Step 2: Map Columns
 1. **Select Matching Method**:
-   - **Stored Procedure**: Uses TF-IDF similarity (default)
+   - **Pattern Match/ML**: Uses TF-IDF similarity (default)
    - **LLM (Cortex AI)**: Uses AI for semantic matching
 2. If using LLM, select a model and click **Run LLM Matching**
 3. Adjust the **Confidence Threshold** slider
@@ -300,13 +442,13 @@ echo "NEW_COL,Target Field Name,Description of the field" >> mappings.csv
 
 **Method 3: Via SQL**
 ```sql
-INSERT INTO CLAIMSIQ.PROCESSOR.MAPPINGS_LIST (SRC, TARGET, DESCRIPTION)
+INSERT INTO FIELD_MAPPER.PROCESSOR.MAPPINGS_LIST (SRC, TARGET, DESCRIPTION)
 VALUES ('NEW_COL', 'Target Field Name', 'Description of the field');
 ```
 
 ## Matching Algorithms
 
-### Stored Procedure: field_matcher_advanced
+### Pattern Match/ML: field_matcher_advanced
 
 The stored procedure combines multiple similarity algorithms:
 
@@ -327,7 +469,7 @@ Final Score = (Basic Score × 0.7) + (TF-IDF Score × 0.3)
 ### Procedure Signature
 
 ```sql
-CALL CLAIMSIQ.PROCESSOR.field_matcher_advanced(
+CALL FIELD_MAPPER.PROCESSOR.field_matcher_advanced(
     input_fields ARRAY,      -- Array of field names to match
     top_n INTEGER,           -- Number of top matches per field (default: 3)
     min_threshold FLOAT      -- Minimum score threshold (default: 0.1)
@@ -442,6 +584,7 @@ GRANT USAGE ON WAREHOUSE compute_wh TO ROLE your_role;
 **Missing files error**
 - Ensure `mappings.csv` exists in the same directory as `deploy.sh`
 - Ensure `mapping_proc.sql` exists in the same directory as `deploy.sh`
+- Ensure `deploy.config` exists (or use defaults)
 
 ### Application Issues
 
@@ -449,11 +592,11 @@ GRANT USAGE ON WAREHOUSE compute_wh TO ROLE your_role;
 1. Check the Debug panel in Step 2
 2. Verify stored procedure exists:
    ```sql
-   SHOW PROCEDURES LIKE 'field_matcher_advanced' IN SCHEMA CLAIMSIQ.PROCESSOR;
+   SHOW PROCEDURES LIKE 'field_matcher_advanced' IN SCHEMA FIELD_MAPPER.PROCESSOR;
    ```
 3. Verify mappings exist:
    ```sql
-   SELECT COUNT(*) FROM CLAIMSIQ.PROCESSOR.MAPPINGS_LIST;
+   SELECT COUNT(*) FROM FIELD_MAPPER.PROCESSOR.MAPPINGS_LIST;
    ```
 
 **Low confidence scores**

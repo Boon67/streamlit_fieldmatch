@@ -1,11 +1,11 @@
 definition_version: 2
 
 entities:
-  claimsiq_app:
+  streamlit_app:
     type: streamlit
     identifier:
-      name: CLAIMSIQ_APP
-    title: "ClaimsIQ"
+      name: <% ctx.env.APP_ID %>
+    title: <% ctx.env.APP_NAME %>
     query_warehouse: <% ctx.env.SNOWFLAKE_WAREHOUSE %>
     main_file: streamlit_app.py
     stage: STREAMLIT_STAGE
