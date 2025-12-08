@@ -6,18 +6,29 @@ from snowflake.snowpark.context import get_active_session
 # Initialize Snowflake session
 session = get_active_session()
 
-# Get app name from config table (with fallback)
-def get_app_name():
-    """Get app name from APP_CONFIG table"""
+# Get config values from APP_CONFIG table
+def get_config_value(key, default=None):
+    """Get a config value from APP_CONFIG table"""
     try:
-        result = session.sql("SELECT CONFIG_VALUE FROM APP_CONFIG WHERE CONFIG_KEY = 'APP_NAME'").collect()
+        result = session.sql(f"SELECT CONFIG_VALUE FROM APP_CONFIG WHERE CONFIG_KEY = '{key}'").collect()
         if result and len(result) > 0:
             return result[0][0]
     except:
         pass
-    return "Field Mapper"  # Default fallback
+    return default
+
+# Get app name from config table (with fallback)
+def get_app_name():
+    """Get app name from APP_CONFIG table"""
+    return get_config_value('APP_NAME', 'Field Mapper')
+
+# Get default LLM model from config table
+def get_default_llm_model():
+    """Get default LLM model from APP_CONFIG table"""
+    return get_config_value('DEFAULT_LLM_MODEL', 'claude-4-sonnet')
 
 APP_NAME = get_app_name()
+DEFAULT_LLM_MODEL_CONFIG = get_default_llm_model()
 st.title(f"{APP_NAME} 🏥")
 st.write("Data Ingest Mapping & Processing")
 
@@ -81,10 +92,10 @@ def get_available_llm_models():
             return models_df['MODEL_NAME'].tolist()
         else:
             # Fallback to common models if query returns empty
-            return ["llama3.1-70b", "mistral-large2", "mistral-7b"]
+            return ["claude-4-sonnet", "llama3.1-70b", "mistral-large2", "mistral-7b"]
     except Exception as e:
         # Fallback to common models if query fails
-        return ["llama3.1-70b", "mistral-large2", "mistral-7b"]
+        return ["claude-4-sonnet", "llama3.1-70b", "mistral-large2", "mistral-7b"]
 
 def get_unique_targets():
     """Get list of unique target field names"""
@@ -800,8 +811,10 @@ with tab1:
             st.error(f"❌ Could not get auto-mappings from field_matcher_advanced: {error_msg}")
             return {}, None, None
     
-    def get_llm_recommendations(source_columns, target_fields, model_name="llama3.1-70b"):
+    def get_llm_recommendations(source_columns, target_fields, model_name=None):
         """Use Snowflake Cortex LLM to get intelligent field mapping recommendations"""
+        if model_name is None:
+            model_name = DEFAULT_LLM_MODEL_CONFIG
         try:
             if not source_columns or not target_fields:
                 return {}, None, None
@@ -1141,11 +1154,25 @@ with tab1:
             if matching_method == "LLM (Cortex AI)":
                 # Fetch available Cortex LLM models from Snowflake in realtime
                 llm_models = get_available_llm_models()
+                
+                # Set default model from config, with fallbacks
+                default_index = 0
+                # First try the configured default model
+                if DEFAULT_LLM_MODEL_CONFIG in llm_models:
+                    default_index = llm_models.index(DEFAULT_LLM_MODEL_CONFIG)
+                else:
+                    # Fallback to other common models if configured model not available
+                    fallback_models = ["claude-4-sonnet", "claude-3-5-sonnet", "llama3.1-70b"]
+                    for fallback in fallback_models:
+                        if fallback in llm_models:
+                            default_index = llm_models.index(fallback)
+                            break
+                
                 selected_model = st.selectbox(
                     "Select LLM Model",
                     options=llm_models,
-                    index=0,
-                    help="Available Cortex AI models in your region. List is fetched dynamically from Snowflake.",
+                    index=default_index,
+                    help=f"Available Cortex AI models. Default: {DEFAULT_LLM_MODEL_CONFIG}",
                     key="llm_model_select"
                 )
         
@@ -1928,7 +1955,58 @@ with tab4:
 # TAB 5: LLM Settings
 with tab5:
     st.subheader("🤖 LLM Settings")
-    st.write("Configure the LLM prompt template used for intelligent field mapping.")
+    st.write("Configure the default LLM model and prompt template for intelligent field mapping.")
+    
+    st.write("---")
+    
+    # Default Model Selection
+    st.markdown("### 🎯 Default LLM Model")
+    
+    model_col1, model_col2 = st.columns([2, 1])
+    
+    with model_col1:
+        # Get available models
+        available_models = get_available_llm_models()
+        
+        # Find current default model index
+        current_default = get_config_value('DEFAULT_LLM_MODEL', 'CLAUDE-4-SONNET')
+        default_model_index = 0
+        if current_default in available_models:
+            default_model_index = available_models.index(current_default)
+        
+        new_default_model = st.selectbox(
+            "Select Default Model",
+            options=available_models,
+            index=default_model_index,
+            help="This model will be pre-selected when using LLM matching.",
+            key="default_model_select"
+        )
+    
+    with model_col2:
+        st.write("")  # Spacer for alignment
+        st.write("")
+        if st.button("💾 Save Default Model", type="primary", use_container_width=True):
+            try:
+                # Update the config in the database
+                escaped_model = new_default_model.replace("'", "''")
+                session.sql(f"""
+                    MERGE INTO APP_CONFIG AS target
+                    USING (SELECT 'DEFAULT_LLM_MODEL' AS CONFIG_KEY, '{escaped_model}' AS CONFIG_VALUE) AS source
+                    ON target.CONFIG_KEY = source.CONFIG_KEY
+                    WHEN MATCHED THEN UPDATE SET CONFIG_VALUE = source.CONFIG_VALUE
+                    WHEN NOT MATCHED THEN INSERT (CONFIG_KEY, CONFIG_VALUE) VALUES (source.CONFIG_KEY, source.CONFIG_VALUE)
+                """).collect()
+                st.success(f"✅ Default model set to: {new_default_model}")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Error saving default model: {str(e)}")
+    
+    st.caption(f"Current default: **{current_default}**")
+    
+    st.write("---")
+    
+    # Prompt Template Section
+    st.markdown("### 📝 Prompt Template")
     
     st.markdown("""
     **About the Prompt Template:**

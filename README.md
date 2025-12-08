@@ -218,6 +218,34 @@ APP_ID="FIELD_MAPPER"
 | `WAREHOUSE` | Warehouse for queries | `COMPUTE_WH` |
 | `APP_NAME` | Display name in Snowsight | `Field Mapper` |
 | `APP_ID` | Snowflake object identifier (no spaces) | `FIELD_MAPPER` |
+| `CREATE_ROLES` | Create RBAC role hierarchy (`true`/`false`) | `true` |
+
+### CREATE_ROLES Option
+
+The `CREATE_ROLES` setting controls whether the deployment creates the RBAC role hierarchy:
+
+**When `CREATE_ROLES="true"` (default):**
+- Creates 3-tier role hierarchy (`<DB>_ADMIN`, `<DB>_READWRITE`, `<DB>_READONLY`)
+- Requires SECURITYADMIN and SYSADMIN access
+- Assigns current user to the admin role
+- Transfers database ownership to admin role
+- Best for new deployments with full admin access
+
+**When `CREATE_ROLES="false"`:**
+- Skips all role creation
+- Only requires SYSADMIN access (or existing database privileges)
+- Creates database and schema only
+- Best when:
+  - Roles already exist from a previous deployment
+  - You don't have SECURITYADMIN access
+  - Your organization manages roles separately
+  - Deploying to an existing database
+
+Example for skipping role creation:
+```bash
+# In deploy.config
+CREATE_ROLES="false"
+```
 
 ### Interactive vs Non-Interactive Deployment
 
@@ -241,7 +269,9 @@ APP_ID="FIELD_MAPPER"
 
 ## RBAC Setup
 
-The deployment script automatically creates a 3-tier Role-Based Access Control (RBAC) hierarchy for the database. This provides granular access control following Snowflake best practices.
+The deployment script can automatically create a 3-tier Role-Based Access Control (RBAC) hierarchy for the database. This is controlled by the `CREATE_ROLES` setting in `deploy.config` (default: `true`).
+
+> **Note:** Set `CREATE_ROLES="false"` in `deploy.config` to skip role creation if you don't have SECURITYADMIN access or want to manage roles separately.
 
 ### Role Hierarchy
 

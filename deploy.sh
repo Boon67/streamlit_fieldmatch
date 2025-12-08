@@ -17,6 +17,8 @@ if [ -f "$CONFIG_FILE" ]; then
     DEFAULT_WAREHOUSE="${WAREHOUSE:-COMPUTE_WH}"
     DEFAULT_APP_NAME="${APP_NAME:-Field Mapper}"
     DEFAULT_APP_ID="${APP_ID:-FIELD_MAPPER}"
+    DEFAULT_CREATE_ROLES="${CREATE_ROLES:-true}"
+    DEFAULT_LLM_MODEL="${DEFAULT_LLM_MODEL:-claude-4-sonnet}"
 else
     # Fallback defaults if config file doesn't exist
     DEFAULT_DATABASE="FIELD_MAPPER"
@@ -24,6 +26,8 @@ else
     DEFAULT_WAREHOUSE="COMPUTE_WH"
     DEFAULT_APP_NAME="Field Mapper"
     DEFAULT_APP_ID="FIELD_MAPPER"
+    DEFAULT_CREATE_ROLES="true"
+    DEFAULT_LLM_MODEL="CLAUDE-4-SONNET"
 fi
 
 # Initialize with defaults
@@ -32,6 +36,8 @@ SCHEMA="$DEFAULT_SCHEMA"
 WAREHOUSE="$DEFAULT_WAREHOUSE"
 APP_NAME="$DEFAULT_APP_NAME"
 APP_ID="$DEFAULT_APP_ID"
+CREATE_ROLES="$DEFAULT_CREATE_ROLES"
+LLM_MODEL="$DEFAULT_LLM_MODEL"
 
 echo "╔════════════════════════════════════════════════════════════╗"
 echo "║           Field Mapper - Snowflake Deployment              ║"
@@ -48,13 +54,10 @@ fi
 echo "✓ Snowflake CLI found"
 echo ""
 
-# Check for required Snowflake privileges (SYSADMIN and SECURITYADMIN)
+# Check for required Snowflake privileges
 echo "🔐 Checking Snowflake role privileges..."
 
-# Get current user's roles
-USER_ROLES=$(snow sql -q "SELECT LISTAGG(GRANTED_ROLE, ',') FROM (SELECT GRANTED_ROLE FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_USERS WHERE GRANTEE_NAME = CURRENT_USER() AND DELETED_ON IS NULL UNION SELECT GRANTED_ROLE FROM SNOWFLAKE.INFORMATION_SCHEMA.APPLICABLE_ROLES);" --format json 2>/dev/null || echo "")
-
-# Check if user can use SYSADMIN
+# Check if user can use SYSADMIN (always required)
 CAN_USE_SYSADMIN=$(snow sql -q "USE ROLE SYSADMIN; SELECT 'YES';" --format json 2>/dev/null | grep -o '"YES"' || echo "")
 
 if [ -z "$CAN_USE_SYSADMIN" ]; then
@@ -77,38 +80,45 @@ if [ -z "$CAN_USE_SYSADMIN" ]; then
 fi
 echo "   ✓ SYSADMIN access confirmed"
 
-# Check if user can use SECURITYADMIN
-CAN_USE_SECURITYADMIN=$(snow sql -q "USE ROLE SECURITYADMIN; SELECT 'YES';" --format json 2>/dev/null | grep -o '"YES"' || echo "")
+# Check if user can use SECURITYADMIN (only required if CREATE_ROLES=true)
+if [ "$DEFAULT_CREATE_ROLES" = "true" ]; then
+    CAN_USE_SECURITYADMIN=$(snow sql -q "USE ROLE SECURITYADMIN; SELECT 'YES';" --format json 2>/dev/null | grep -o '"YES"' || echo "")
 
-if [ -z "$CAN_USE_SECURITYADMIN" ]; then
-    echo ""
-    echo "╔════════════════════════════════════════════════════════════╗"
-    echo "║                    ❌ PERMISSION ERROR                      ║"
-    echo "╚════════════════════════════════════════════════════════════╝"
-    echo ""
-    echo "Your current user does not have access to the SECURITYADMIN role."
-    echo ""
-    echo "The deployment requires SECURITYADMIN privileges to:"
-    echo "   • Create database access roles"
-    echo "   • Establish role hierarchy"
-    echo "   • Grant roles to users"
-    echo ""
-    echo "Please contact your Snowflake administrator to grant SECURITYADMIN access,"
-    echo "or run this deployment with a user that has the required privileges."
-    echo ""
-    exit 1
+    if [ -z "$CAN_USE_SECURITYADMIN" ]; then
+        echo ""
+        echo "╔════════════════════════════════════════════════════════════╗"
+        echo "║                    ❌ PERMISSION ERROR                      ║"
+        echo "╚════════════════════════════════════════════════════════════╝"
+        echo ""
+        echo "Your current user does not have access to the SECURITYADMIN role."
+        echo ""
+        echo "The deployment requires SECURITYADMIN privileges to:"
+        echo "   • Create database access roles"
+        echo "   • Establish role hierarchy"
+        echo "   • Grant roles to users"
+        echo ""
+        echo "Options:"
+        echo "   1. Contact your Snowflake administrator to grant SECURITYADMIN access"
+        echo "   2. Set CREATE_ROLES=\"false\" in deploy.config to skip role creation"
+        echo ""
+        exit 1
+    fi
+    echo "   ✓ SECURITYADMIN access confirmed"
+else
+    echo "   ⏭️  SECURITYADMIN check skipped (CREATE_ROLES=false)"
 fi
-echo "   ✓ SECURITYADMIN access confirmed"
 echo ""
 
 # Configuration prompt
 echo "📋 Configuration (from deploy.config):"
 echo ""
-echo "   Database:  $DEFAULT_DATABASE"
-echo "   Schema:    $DEFAULT_SCHEMA"
-echo "   Warehouse: $DEFAULT_WAREHOUSE"
-echo "   App Name:  $DEFAULT_APP_NAME"
-echo "   App ID:    $DEFAULT_APP_ID"
+echo "   Database:     $DEFAULT_DATABASE"
+echo "   Schema:       $DEFAULT_SCHEMA"
+echo "   Warehouse:    $DEFAULT_WAREHOUSE"
+echo "   App Name:     $DEFAULT_APP_NAME"
+echo "   App ID:       $DEFAULT_APP_ID"
+echo "   Create Roles: $DEFAULT_CREATE_ROLES"
+echo "   LLM Model:    $DEFAULT_LLM_MODEL"
 echo ""
 
 # Check for --defaults or -y flag to skip prompts
@@ -189,43 +199,54 @@ echo "✓ Current user: ${CURRENT_USER}"
 echo ""
 
 # Step 1: Setup RBAC roles and create database/schema
-echo "🔐 Step 1: Setting up RBAC roles and database..."
+if [ "$CREATE_ROLES" = "true" ]; then
+    echo "🔐 Step 1: Setting up RBAC roles and database..."
 
-RBAC_FILE="${SCRIPT_DIR}/setup_rbac.sql"
+    RBAC_FILE="${SCRIPT_DIR}/setup_rbac.sql"
 
-if [ -f "$RBAC_FILE" ]; then
-    echo "   Creating role hierarchy: ${DATABASE}_READONLY -> ${DATABASE}_READWRITE -> ${DATABASE}_ADMIN"
-    
-    # Read the SQL file and replace placeholders using a temp file
-    TEMP_RBAC_FILE=$(mktemp)
-    sed -e "s/{{DATABASE}}/${DATABASE}/g" \
-        -e "s/{{SCHEMA}}/${SCHEMA}/g" \
-        -e "s/{{WAREHOUSE}}/${WAREHOUSE}/g" \
-        -e "s/{{CURRENT_USER}}/${CURRENT_USER}/g" \
-        "$RBAC_FILE" > "$TEMP_RBAC_FILE"
-    
-    # Execute RBAC setup
-    snow sql -f "$TEMP_RBAC_FILE" || {
+    if [ -f "$RBAC_FILE" ]; then
+        echo "   Creating role hierarchy: ${DATABASE}_READONLY -> ${DATABASE}_READWRITE -> ${DATABASE}_ADMIN"
+        
+        # Read the SQL file and replace placeholders using a temp file
+        TEMP_RBAC_FILE=$(mktemp)
+        sed -e "s/{{DATABASE}}/${DATABASE}/g" \
+            -e "s/{{SCHEMA}}/${SCHEMA}/g" \
+            -e "s/{{WAREHOUSE}}/${WAREHOUSE}/g" \
+            -e "s/{{CURRENT_USER}}/${CURRENT_USER}/g" \
+            "$RBAC_FILE" > "$TEMP_RBAC_FILE"
+        
+        # Execute RBAC setup
+        snow sql -f "$TEMP_RBAC_FILE" || {
+            rm -f "$TEMP_RBAC_FILE"
+            echo ""
+            echo "❌ Error: Failed to execute RBAC setup."
+            echo "   Please check the error messages above and ensure you have the required privileges."
+            exit 1
+        }
         rm -f "$TEMP_RBAC_FILE"
-        echo ""
-        echo "❌ Error: Failed to execute RBAC setup."
-        echo "   Please check the error messages above and ensure you have the required privileges."
+        echo "✓ RBAC roles and database ready"
+    else
+        echo "❌ Error: setup_rbac.sql not found at ${RBAC_FILE}"
+        echo "   This file is required for deployment."
         exit 1
-    }
-    rm -f "$TEMP_RBAC_FILE"
-    echo "✓ RBAC roles and database ready"
-else
-    echo "❌ Error: setup_rbac.sql not found at ${RBAC_FILE}"
-    echo "   This file is required for deployment."
-    exit 1
-fi
-echo ""
+    fi
+    echo ""
 
-# Switch to the admin role for remaining operations
-echo "🔄 Switching to ${DATABASE}_ADMIN role..."
-snow sql -q "USE ROLE ${DATABASE}_ADMIN;" || {
-    echo "⚠️  Could not switch to ${DATABASE}_ADMIN role, continuing with current role..."
-}
+    # Switch to the admin role for remaining operations
+    echo "🔄 Switching to ${DATABASE}_ADMIN role..."
+    snow sql -q "USE ROLE ${DATABASE}_ADMIN;" || {
+        echo "⚠️  Could not switch to ${DATABASE}_ADMIN role, continuing with current role..."
+    }
+else
+    echo "⏭️  Step 1: Skipping RBAC role creation (CREATE_ROLES=false)"
+    echo ""
+    
+    # Create database and schema without RBAC
+    echo "📦 Creating database and schema..."
+    snow sql -q "CREATE DATABASE IF NOT EXISTS ${DATABASE};" || true
+    snow sql -q "CREATE SCHEMA IF NOT EXISTS ${DATABASE}.${SCHEMA};" || true
+    echo "✓ Database and schema ready"
+fi
 
 # Step 2: Create the mappings and config tables
 echo "📋 Step 2: Creating tables..."
@@ -251,12 +272,23 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.${SCHEMA}.APP_CONFIG (
 );
 " || true
 
-# Escape single quotes in APP_NAME for SQL
+# Escape single quotes in values for SQL
 APP_NAME_ESCAPED=$(echo "$APP_NAME" | sed "s/'/''/g")
+LLM_MODEL_ESCAPED=$(echo "$LLM_MODEL" | sed "s/'/''/g")
 
+# Store APP_NAME in config
 snow sql -q "
 MERGE INTO ${DATABASE}.${SCHEMA}.APP_CONFIG AS target
 USING (SELECT 'APP_NAME' AS CONFIG_KEY, '${APP_NAME_ESCAPED}' AS CONFIG_VALUE) AS source
+ON target.CONFIG_KEY = source.CONFIG_KEY
+WHEN MATCHED THEN UPDATE SET CONFIG_VALUE = source.CONFIG_VALUE
+WHEN NOT MATCHED THEN INSERT (CONFIG_KEY, CONFIG_VALUE) VALUES (source.CONFIG_KEY, source.CONFIG_VALUE);
+" || true
+
+# Store DEFAULT_LLM_MODEL in config
+snow sql -q "
+MERGE INTO ${DATABASE}.${SCHEMA}.APP_CONFIG AS target
+USING (SELECT 'DEFAULT_LLM_MODEL' AS CONFIG_KEY, '${LLM_MODEL_ESCAPED}' AS CONFIG_VALUE) AS source
 ON target.CONFIG_KEY = source.CONFIG_KEY
 WHEN MATCHED THEN UPDATE SET CONFIG_VALUE = source.CONFIG_VALUE
 WHEN NOT MATCHED THEN INSERT (CONFIG_KEY, CONFIG_VALUE) VALUES (source.CONFIG_KEY, source.CONFIG_VALUE);
