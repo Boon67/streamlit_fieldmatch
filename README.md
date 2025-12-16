@@ -78,7 +78,7 @@ streamlit_fieldmatch/
 ├── environment.yml           # Python dependencies for Snowflake
 ├── snowflake.yml            # Snowflake project configuration
 ├── deploy.sh                # Automated deployment script
-├── deploy.config            # Deployment configuration file
+├── default.config            # Deployment configuration file
 ├── setup_rbac.sql           # RBAC role hierarchy setup script
 ├── mapping_proc.sql         # field_matcher_advanced stored procedure
 ├── mappings.csv             # Initial field mappings (SRC, TARGET, DESCRIPTION)
@@ -119,7 +119,7 @@ pip install pandas numpy openpyxl scikit-learn
 cd streamlit_fieldmatch
 
 # 2. Edit configuration (optional)
-nano deploy.config
+nano default.config
 
 # 3. Make deploy script executable
 chmod +x deploy.sh
@@ -150,15 +150,14 @@ chmod +x deploy.sh
 
 ✓ Snowflake CLI found
 
-📋 Configuration (from deploy.config):
+📋 Enter deployment configuration (press Enter to use default):
 
-   Database:  FIELD_MAPPER
-   Schema:    PROCESSOR
-   Warehouse: COMPUTE_WH
-   App Name:  Field Mapper
-   App ID:    FIELD_MAPPER
-
-Use these values? (Y/n): 
+   Database name [FIELD_MAPPER]: 
+   Schema name [PROCESSOR]: 
+   Warehouse name [COMPUTE_WH]: 
+   App display name [Field Mapper]: 
+   App identifier (no spaces) [FIELD_MAPPER]: 
+   Create RBAC roles? (true/false) [true]: 
 
 Starting deployment...
 
@@ -187,13 +186,17 @@ Starting deployment...
 
 ## Configuration
 
-### Configuration File: deploy.config
+### Configuration File: default.config
 
-Edit `deploy.config` to customize your deployment:
+Edit `default.config` to customize your deployment:
 
 ```bash
 # Field Mapper Deployment Configuration
 # Edit these values to customize your deployment
+
+# Accept defaults without prompting (true/false)
+# Set to "true" to skip interactive prompts and use values below
+ACCEPT_DEFAULTS="false"
 
 # Snowflake Database name
 DATABASE="FIELD_MAPPER"
@@ -209,18 +212,40 @@ APP_NAME="Field Mapper"
 
 # Streamlit App identifier (used in Snowflake, no spaces)
 APP_ID="FIELD_MAPPER"
+
+# Create RBAC roles (true/false)
+CREATE_ROLES="true"
+
+# Default LLM model for field matching
+DEFAULT_LLM_MODEL="SNOWFLAKE-ARCTIC"
 ```
 
 ### Configuration Options
 
 | Setting | Description | Default |
 |---------|-------------|---------|
+| `ACCEPT_DEFAULTS` | Skip prompts and use config values (`true`/`false`) | `false` |
 | `DATABASE` | Snowflake database name | `FIELD_MAPPER` |
 | `SCHEMA` | Snowflake schema name | `PROCESSOR` |
 | `WAREHOUSE` | Warehouse for queries | `COMPUTE_WH` |
 | `APP_NAME` | Display name in Snowsight | `Field Mapper` |
 | `APP_ID` | Snowflake object identifier (no spaces) | `FIELD_MAPPER` |
 | `CREATE_ROLES` | Create RBAC role hierarchy (`true`/`false`) | `true` |
+| `DEFAULT_LLM_MODEL` | Default LLM model for field matching | `SNOWFLAKE-ARCTIC` |
+
+### ACCEPT_DEFAULTS Option
+
+The `ACCEPT_DEFAULTS` setting controls whether the deployment prompts for configuration values:
+
+**When `ACCEPT_DEFAULTS="false"` (default):**
+- Prompts for each configuration value interactively
+- Shows default values in brackets, press Enter to accept
+- Best for manual deployments where you want to review/change values
+
+**When `ACCEPT_DEFAULTS="true"`:**
+- Uses all values from `default.config` without prompting
+- Equivalent to running `./deploy.sh --defaults`
+- Best for automated deployments or when config is pre-set
 
 ### CREATE_ROLES Option
 
@@ -245,35 +270,43 @@ The `CREATE_ROLES` setting controls whether the deployment creates the RBAC role
 
 Example for skipping role creation:
 ```bash
-# In deploy.config
+# In default.config
 CREATE_ROLES="false"
 ```
 
 ### Interactive vs Non-Interactive Deployment
 
-**Interactive Mode** (default):
+**Interactive Mode** (when `ACCEPT_DEFAULTS="false"`):
 ```bash
 ./deploy.sh
 ```
-- Shows current configuration from `deploy.config`
-- Asks if you want to use these values or customize
-- Allows entering custom values for each parameter
-- Confirms before proceeding
+- Prompts for each configuration value (database, schema, warehouse, etc.)
+- Shows default values from `default.config` in brackets
+- Press Enter to accept default, or type a new value
+- Shows configuration summary and confirms before proceeding
 
-**Non-Interactive Mode**:
+**Non-Interactive Mode** (any of these methods):
 ```bash
+# Method 1: Set in config file
+# In default.config: ACCEPT_DEFAULTS="true"
+./deploy.sh
+
+# Method 2: Command line flag
 ./deploy.sh --defaults
 # or
 ./deploy.sh -y
+
+# Method 3: Skip permission checks as well
+./deploy.sh --defaults --skip-permission-check
 ```
-- Uses values from `deploy.config` without prompting
+- Uses values from `default.config` without prompting
 - Useful for CI/CD pipelines and automated deployments
 
 ## RBAC Setup
 
-The deployment script can automatically create a 3-tier Role-Based Access Control (RBAC) hierarchy for the database. This is controlled by the `CREATE_ROLES` setting in `deploy.config` (default: `true`).
+The deployment script can automatically create a 3-tier Role-Based Access Control (RBAC) hierarchy for the database. This is controlled by the `CREATE_ROLES` setting in `default.config` (default: `true`).
 
-> **Note:** Set `CREATE_ROLES="false"` in `deploy.config` to skip role creation if you don't have SECURITYADMIN access or want to manage roles separately.
+> **Note:** Set `CREATE_ROLES="false"` in `default.config` to skip role creation if you don't have SECURITYADMIN access or want to manage roles separately.
 
 ### Role Hierarchy
 
@@ -614,7 +647,7 @@ GRANT USAGE ON WAREHOUSE compute_wh TO ROLE your_role;
 **Missing files error**
 - Ensure `mappings.csv` exists in the same directory as `deploy.sh`
 - Ensure `mapping_proc.sql` exists in the same directory as `deploy.sh`
-- Ensure `deploy.config` exists (or use defaults)
+- Ensure `default.config` exists (or use defaults)
 
 ### Application Issues
 

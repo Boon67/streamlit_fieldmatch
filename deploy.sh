@@ -7,11 +7,12 @@ set -e
 
 # Get the directory where the script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="${SCRIPT_DIR}/deploy.config"
+CONFIG_FILE="${SCRIPT_DIR}/default.config"
 
 # Load defaults from config file
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
+    DEFAULT_ACCEPT_DEFAULTS="${ACCEPT_DEFAULTS:-false}"
     DEFAULT_DATABASE="${DATABASE:-FIELD_MAPPER}"
     DEFAULT_SCHEMA="${SCHEMA:-PROCESSOR}"
     DEFAULT_WAREHOUSE="${WAREHOUSE:-COMPUTE_WH}"
@@ -21,6 +22,7 @@ if [ -f "$CONFIG_FILE" ]; then
     DEFAULT_LLM_MODEL="${DEFAULT_LLM_MODEL:-claude-4-sonnet}"
 else
     # Fallback defaults if config file doesn't exist
+    DEFAULT_ACCEPT_DEFAULTS="false"
     DEFAULT_DATABASE="FIELD_MAPPER"
     DEFAULT_SCHEMA="PROCESSOR"
     DEFAULT_WAREHOUSE="COMPUTE_WH"
@@ -128,75 +130,77 @@ else
 fi
 
 # Configuration prompt
-echo "📋 Configuration (from deploy.config):"
-echo ""
-echo "   Database:     $DEFAULT_DATABASE"
-echo "   Schema:       $DEFAULT_SCHEMA"
-echo "   Warehouse:    $DEFAULT_WAREHOUSE"
-echo "   App Name:     $DEFAULT_APP_NAME"
-echo "   App ID:       $DEFAULT_APP_ID"
-echo "   Create Roles: $DEFAULT_CREATE_ROLES"
-echo "   LLM Model:    $DEFAULT_LLM_MODEL"
+echo "📋 Enter deployment configuration (press Enter to use default):"
 echo ""
 
-# Check for --defaults or -y flag to skip prompts
-if [[ "$1" == "--defaults" ]] || [[ "$1" == "-y" ]]; then
-    echo "Using config values (--defaults flag detected)"
+# Check for --defaults or -y flag, or ACCEPT_DEFAULTS=true in config
+if [[ " $* " == *" --defaults "* ]] || [[ " $* " == *" -y "* ]] || [[ "$DEFAULT_ACCEPT_DEFAULTS" == "true" ]]; then
+    if [[ "$DEFAULT_ACCEPT_DEFAULTS" == "true" ]]; then
+        echo "Using default values (ACCEPT_DEFAULTS=true in config)"
+    else
+        echo "Using default values (--defaults flag detected)"
+    fi
+    echo ""
+    echo "   Database:     $DATABASE"
+    echo "   Schema:       $SCHEMA"
+    echo "   Warehouse:    $WAREHOUSE"
+    echo "   App Name:     $APP_NAME"
+    echo "   App ID:       $APP_ID"
+    echo "   Create Roles: $CREATE_ROLES"
+    echo "   LLM Model:    $LLM_MODEL"
     echo ""
 else
-    read -p "Use these values? (Y/n): " use_defaults
+    # Database
+    read -p "   Database name [$DEFAULT_DATABASE]: " input_database
+    if [ -n "$input_database" ]; then
+        DATABASE="$input_database"
+    fi
     
-    if [[ "$use_defaults" =~ ^[Nn]$ ]]; then
-        echo ""
-        echo "Enter custom values (press Enter to keep current):"
-        echo ""
-        
-        # Database
-        read -p "Database name [$DEFAULT_DATABASE]: " input_database
-        if [ -n "$input_database" ]; then
-            DATABASE="$input_database"
-        fi
-        
-        # Schema
-        read -p "Schema name [$DEFAULT_SCHEMA]: " input_schema
-        if [ -n "$input_schema" ]; then
-            SCHEMA="$input_schema"
-        fi
-        
-        # Warehouse
-        read -p "Warehouse name [$DEFAULT_WAREHOUSE]: " input_warehouse
-        if [ -n "$input_warehouse" ]; then
-            WAREHOUSE="$input_warehouse"
-        fi
-        
-        # App Name
-        read -p "App display name [$DEFAULT_APP_NAME]: " input_app_name
-        if [ -n "$input_app_name" ]; then
-            APP_NAME="$input_app_name"
-        fi
-        
-        # App ID
-        read -p "App identifier (no spaces) [$DEFAULT_APP_ID]: " input_app_id
-        if [ -n "$input_app_id" ]; then
-            APP_ID="$input_app_id"
-        fi
-        
-        echo ""
-        echo "Configuration:"
-        echo "   Database:  $DATABASE"
-        echo "   Schema:    $SCHEMA"
-        echo "   Warehouse: $WAREHOUSE"
-        echo "   App Name:  $APP_NAME"
-        echo "   App ID:    $APP_ID"
-        echo ""
-        
-        read -p "Proceed with deployment? (Y/n): " confirm
-        if [[ "$confirm" =~ ^[Nn]$ ]]; then
-            echo "Deployment cancelled."
-            exit 0
-        fi
-    else
-        echo "Using config values."
+    # Schema
+    read -p "   Schema name [$DEFAULT_SCHEMA]: " input_schema
+    if [ -n "$input_schema" ]; then
+        SCHEMA="$input_schema"
+    fi
+    
+    # Warehouse
+    read -p "   Warehouse name [$DEFAULT_WAREHOUSE]: " input_warehouse
+    if [ -n "$input_warehouse" ]; then
+        WAREHOUSE="$input_warehouse"
+    fi
+    
+    # App Name
+    read -p "   App display name [$DEFAULT_APP_NAME]: " input_app_name
+    if [ -n "$input_app_name" ]; then
+        APP_NAME="$input_app_name"
+    fi
+    
+    # App ID
+    read -p "   App identifier (no spaces) [$DEFAULT_APP_ID]: " input_app_id
+    if [ -n "$input_app_id" ]; then
+        APP_ID="$input_app_id"
+    fi
+    
+    # Create Roles
+    read -p "   Create RBAC roles? (true/false) [$DEFAULT_CREATE_ROLES]: " input_create_roles
+    if [ -n "$input_create_roles" ]; then
+        CREATE_ROLES="$input_create_roles"
+    fi
+    
+    echo ""
+    echo "📋 Configuration Summary:"
+    echo "   Database:     $DATABASE"
+    echo "   Schema:       $SCHEMA"
+    echo "   Warehouse:    $WAREHOUSE"
+    echo "   App Name:     $APP_NAME"
+    echo "   App ID:       $APP_ID"
+    echo "   Create Roles: $CREATE_ROLES"
+    echo "   LLM Model:    $LLM_MODEL"
+    echo ""
+    
+    read -p "Proceed with deployment? (Y/n): " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        echo "Deployment cancelled."
+        exit 0
     fi
 fi
 
@@ -422,7 +426,7 @@ echo "   3. Use 'Test Matches' tab to test the matching algorithm"
 echo "   4. Use 'Upload & Map File' tab to map and load data files"
 echo ""
 echo "💡 Tips:"
-echo "   - Edit deploy.config to change default values"
+echo "   - Edit default.config to change default values"
 echo "   - Run with --defaults or -y flag to skip prompts"
 echo "   - Run with --skip-permission-check to bypass role checks"
 echo ""

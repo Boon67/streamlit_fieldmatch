@@ -6,9 +6,10 @@ REM This script deploys the Streamlit app and stored procedure to Snowflake usin
 
 REM Get the directory where the script is located
 set "SCRIPT_DIR=%~dp0"
-set "CONFIG_FILE=%SCRIPT_DIR%deploy.config"
+set "CONFIG_FILE=%SCRIPT_DIR%default.config"
 
 REM Default values
+set "DEFAULT_ACCEPT_DEFAULTS=false"
 set "DEFAULT_DATABASE=FIELD_MAPPER"
 set "DEFAULT_SCHEMA=PROCESSOR"
 set "DEFAULT_WAREHOUSE=COMPUTE_WH"
@@ -27,6 +28,7 @@ if exist "%CONFIG_FILE%" (
                 REM Remove quotes from value
                 set "value=%%b"
                 set "value=!value:"=!"
+                if "%%a"=="ACCEPT_DEFAULTS" set "DEFAULT_ACCEPT_DEFAULTS=!value!"
                 if "%%a"=="DATABASE" set "DEFAULT_DATABASE=!value!"
                 if "%%a"=="SCHEMA" set "DEFAULT_SCHEMA=!value!"
                 if "%%a"=="WAREHOUSE" set "DEFAULT_WAREHOUSE=!value!"
@@ -133,64 +135,66 @@ if "%SKIP_PERMISSION_CHECK%"=="true" (
 )
 
 REM Configuration prompt
-echo [CONFIG] Configuration ^(from deploy.config^):
-echo.
-echo    Database:     %DEFAULT_DATABASE%
-echo    Schema:       %DEFAULT_SCHEMA%
-echo    Warehouse:    %DEFAULT_WAREHOUSE%
-echo    App Name:     %DEFAULT_APP_NAME%
-echo    App ID:       %DEFAULT_APP_ID%
-echo    Create Roles: %DEFAULT_CREATE_ROLES%
-echo    LLM Model:    %DEFAULT_LLM_MODEL%
+echo [CONFIG] Enter deployment configuration ^(press Enter to use default^):
 echo.
 
-REM Check for --defaults or -y flag to skip prompts
+REM Check for --defaults or -y flag, or ACCEPT_DEFAULTS=true in config
 set "USE_DEFAULTS=0"
-if "%~1"=="--defaults" set "USE_DEFAULTS=1"
-if "%~1"=="-y" set "USE_DEFAULTS=1"
+for %%a in (%*) do (
+    if "%%a"=="--defaults" set "USE_DEFAULTS=1"
+    if "%%a"=="-y" set "USE_DEFAULTS=1"
+)
+if "%DEFAULT_ACCEPT_DEFAULTS%"=="true" set "USE_DEFAULTS=1"
 
 if "%USE_DEFAULTS%"=="1" (
-    echo Using config values ^(--defaults flag detected^)
+    if "%DEFAULT_ACCEPT_DEFAULTS%"=="true" (
+        echo Using default values ^(ACCEPT_DEFAULTS=true in config^)
+    ) else (
+        echo Using default values ^(--defaults flag detected^)
+    )
+    echo.
+    echo    Database:     !DATABASE!
+    echo    Schema:       !SCHEMA!
+    echo    Warehouse:    !WAREHOUSE!
+    echo    App Name:     !APP_NAME!
+    echo    App ID:       !APP_ID!
+    echo    Create Roles: !CREATE_ROLES!
+    echo    LLM Model:    !LLM_MODEL!
     echo.
 ) else (
-    set /p "use_defaults=Use these values? (Y/n): "
+    set /p "input_database=   Database name [%DEFAULT_DATABASE%]: "
+    if not "!input_database!"=="" set "DATABASE=!input_database!"
     
-    if /i "!use_defaults!"=="n" (
-        echo.
-        echo Enter custom values ^(press Enter to keep current^):
-        echo.
-        
-        set /p "input_database=Database name [%DEFAULT_DATABASE%]: "
-        if not "!input_database!"=="" set "DATABASE=!input_database!"
-        
-        set /p "input_schema=Schema name [%DEFAULT_SCHEMA%]: "
-        if not "!input_schema!"=="" set "SCHEMA=!input_schema!"
-        
-        set /p "input_warehouse=Warehouse name [%DEFAULT_WAREHOUSE%]: "
-        if not "!input_warehouse!"=="" set "WAREHOUSE=!input_warehouse!"
-        
-        set /p "input_app_name=App display name [%DEFAULT_APP_NAME%]: "
-        if not "!input_app_name!"=="" set "APP_NAME=!input_app_name!"
-        
-        set /p "input_app_id=App identifier ^(no spaces^) [%DEFAULT_APP_ID%]: "
-        if not "!input_app_id!"=="" set "APP_ID=!input_app_id!"
-        
-        echo.
-        echo Configuration:
-        echo    Database:  !DATABASE!
-        echo    Schema:    !SCHEMA!
-        echo    Warehouse: !WAREHOUSE!
-        echo    App Name:  !APP_NAME!
-        echo    App ID:    !APP_ID!
-        echo.
-        
-        set /p "confirm=Proceed with deployment? (Y/n): "
-        if /i "!confirm!"=="n" (
-            echo Deployment cancelled.
-            exit /b 0
-        )
-    ) else (
-        echo Using config values.
+    set /p "input_schema=   Schema name [%DEFAULT_SCHEMA%]: "
+    if not "!input_schema!"=="" set "SCHEMA=!input_schema!"
+    
+    set /p "input_warehouse=   Warehouse name [%DEFAULT_WAREHOUSE%]: "
+    if not "!input_warehouse!"=="" set "WAREHOUSE=!input_warehouse!"
+    
+    set /p "input_app_name=   App display name [%DEFAULT_APP_NAME%]: "
+    if not "!input_app_name!"=="" set "APP_NAME=!input_app_name!"
+    
+    set /p "input_app_id=   App identifier ^(no spaces^) [%DEFAULT_APP_ID%]: "
+    if not "!input_app_id!"=="" set "APP_ID=!input_app_id!"
+    
+    set /p "input_create_roles=   Create RBAC roles? ^(true/false^) [%DEFAULT_CREATE_ROLES%]: "
+    if not "!input_create_roles!"=="" set "CREATE_ROLES=!input_create_roles!"
+    
+    echo.
+    echo [CONFIG] Configuration Summary:
+    echo    Database:     !DATABASE!
+    echo    Schema:       !SCHEMA!
+    echo    Warehouse:    !WAREHOUSE!
+    echo    App Name:     !APP_NAME!
+    echo    App ID:       !APP_ID!
+    echo    Create Roles: !CREATE_ROLES!
+    echo    LLM Model:    !LLM_MODEL!
+    echo.
+    
+    set /p "confirm=Proceed with deployment? (Y/n): "
+    if /i "!confirm!"=="n" (
+        echo Deployment cancelled.
+        exit /b 0
     )
 )
 
@@ -392,7 +396,7 @@ echo    3. Use 'Test Matches' tab to test the matching algorithm
 echo    4. Use 'Upload ^& Map File' tab to map and load data files
 echo.
 echo [TIPS]
-echo    - Edit deploy.config to change default values
+echo    - Edit default.config to change default values
 echo    - Run with --defaults or -y flag to skip prompts
 echo    - Run with --skip-permission-check to bypass role checks
 echo.
