@@ -38,6 +38,16 @@ APP_NAME="$DEFAULT_APP_NAME"
 APP_ID="$DEFAULT_APP_ID"
 CREATE_ROLES="$DEFAULT_CREATE_ROLES"
 LLM_MODEL="$DEFAULT_LLM_MODEL"
+SKIP_PERMISSION_CHECK="false"
+
+# Parse command line arguments
+for arg in "$@"; do
+    case $arg in
+        --skip-permission-check)
+            SKIP_PERMISSION_CHECK="true"
+            ;;
+    esac
+done
 
 echo "╔════════════════════════════════════════════════════════════╗"
 echo "║           Field Mapper - Snowflake Deployment              ║"
@@ -54,60 +64,68 @@ fi
 echo "✓ Snowflake CLI found"
 echo ""
 
-# Check for required Snowflake privileges
-echo "🔐 Checking Snowflake role privileges..."
+# Check for required Snowflake privileges (unless skipped)
+if [ "$SKIP_PERMISSION_CHECK" = "true" ]; then
+    echo "⏭️  Skipping permission checks (--skip-permission-check flag)"
+    echo ""
+else
+    echo "🔐 Checking Snowflake role privileges..."
 
-# Check if user can use SYSADMIN (always required)
-CAN_USE_SYSADMIN=$(snow sql -q "USE ROLE SYSADMIN; SELECT 'YES';" --format json 2>/dev/null | grep -o '"YES"' || echo "")
+    # Check if user can use SYSADMIN (always required)
+    CAN_USE_SYSADMIN=$(snow sql -q "USE ROLE SYSADMIN; SELECT 'YES';" --format json 2>/dev/null | grep -o '"YES"' || echo "")
 
-if [ -z "$CAN_USE_SYSADMIN" ]; then
-    echo ""
-    echo "╔════════════════════════════════════════════════════════════╗"
-    echo "║                    ❌ PERMISSION ERROR                      ║"
-    echo "╚════════════════════════════════════════════════════════════╝"
-    echo ""
-    echo "Your current user does not have access to the SYSADMIN role."
-    echo ""
-    echo "The deployment requires SYSADMIN privileges to:"
-    echo "   • Create databases and schemas"
-    echo "   • Grant object privileges"
-    echo "   • Deploy stored procedures"
-    echo ""
-    echo "Please contact your Snowflake administrator to grant SYSADMIN access,"
-    echo "or run this deployment with a user that has the required privileges."
-    echo ""
-    exit 1
-fi
-echo "   ✓ SYSADMIN access confirmed"
-
-# Check if user can use SECURITYADMIN (only required if CREATE_ROLES=true)
-if [ "$DEFAULT_CREATE_ROLES" = "true" ]; then
-    CAN_USE_SECURITYADMIN=$(snow sql -q "USE ROLE SECURITYADMIN; SELECT 'YES';" --format json 2>/dev/null | grep -o '"YES"' || echo "")
-
-    if [ -z "$CAN_USE_SECURITYADMIN" ]; then
+    if [ -z "$CAN_USE_SYSADMIN" ]; then
         echo ""
         echo "╔════════════════════════════════════════════════════════════╗"
         echo "║                    ❌ PERMISSION ERROR                      ║"
         echo "╚════════════════════════════════════════════════════════════╝"
         echo ""
-        echo "Your current user does not have access to the SECURITYADMIN role."
+        echo "Your current user does not have access to the SYSADMIN role."
         echo ""
-        echo "The deployment requires SECURITYADMIN privileges to:"
-        echo "   • Create database access roles"
-        echo "   • Establish role hierarchy"
-        echo "   • Grant roles to users"
+        echo "The deployment requires SYSADMIN privileges to:"
+        echo "   • Create databases and schemas"
+        echo "   • Grant object privileges"
+        echo "   • Deploy stored procedures"
         echo ""
-        echo "Options:"
-        echo "   1. Contact your Snowflake administrator to grant SECURITYADMIN access"
-        echo "   2. Set CREATE_ROLES=\"false\" in deploy.config to skip role creation"
+        echo "Please contact your Snowflake administrator to grant SYSADMIN access,"
+        echo "or run this deployment with a user that has the required privileges."
+        echo ""
+        echo "💡 Tip: Use --skip-permission-check to bypass this check"
         echo ""
         exit 1
     fi
-    echo "   ✓ SECURITYADMIN access confirmed"
-else
-    echo "   ⏭️  SECURITYADMIN check skipped (CREATE_ROLES=false)"
+    echo "   ✓ SYSADMIN access confirmed"
+
+    # Check if user can use SECURITYADMIN (only required if CREATE_ROLES=true)
+    if [ "$DEFAULT_CREATE_ROLES" = "true" ]; then
+        CAN_USE_SECURITYADMIN=$(snow sql -q "USE ROLE SECURITYADMIN; SELECT 'YES';" --format json 2>/dev/null | grep -o '"YES"' || echo "")
+
+        if [ -z "$CAN_USE_SECURITYADMIN" ]; then
+            echo ""
+            echo "╔════════════════════════════════════════════════════════════╗"
+            echo "║                    ❌ PERMISSION ERROR                      ║"
+            echo "╚════════════════════════════════════════════════════════════╝"
+            echo ""
+            echo "Your current user does not have access to the SECURITYADMIN role."
+            echo ""
+            echo "The deployment requires SECURITYADMIN privileges to:"
+            echo "   • Create database access roles"
+            echo "   • Establish role hierarchy"
+            echo "   • Grant roles to users"
+            echo ""
+            echo "Options:"
+            echo "   1. Contact your Snowflake administrator to grant SECURITYADMIN access"
+            echo "   2. Set CREATE_ROLES=\"false\" in deploy.config to skip role creation"
+            echo "   3. Use --skip-permission-check to bypass this check"
+            echo ""
+            exit 1
+        fi
+        echo "   ✓ SECURITYADMIN access confirmed"
+    else
+        echo "   ⏭️  SECURITYADMIN check skipped (CREATE_ROLES=false)"
+    fi
+    echo ""
 fi
-echo ""
 
 # Configuration prompt
 echo "📋 Configuration (from deploy.config):"
@@ -406,4 +424,5 @@ echo ""
 echo "💡 Tips:"
 echo "   - Edit deploy.config to change default values"
 echo "   - Run with --defaults or -y flag to skip prompts"
+echo "   - Run with --skip-permission-check to bypass role checks"
 echo ""

@@ -47,6 +47,12 @@ set "APP_NAME=%DEFAULT_APP_NAME%"
 set "APP_ID=%DEFAULT_APP_ID%"
 set "CREATE_ROLES=%DEFAULT_CREATE_ROLES%"
 set "LLM_MODEL=%DEFAULT_LLM_MODEL%"
+set "SKIP_PERMISSION_CHECK=false"
+
+REM Parse command line arguments
+for %%a in (%*) do (
+    if "%%a"=="--skip-permission-check" set "SKIP_PERMISSION_CHECK=true"
+)
 
 echo.
 echo ================================================================
@@ -65,58 +71,66 @@ if %ERRORLEVEL% neq 0 (
 echo [OK] Snowflake CLI found
 echo.
 
-REM Check for required Snowflake privileges
-echo [INFO] Checking Snowflake role privileges...
+REM Check for required Snowflake privileges (unless skipped)
+if "%SKIP_PERMISSION_CHECK%"=="true" (
+    echo [SKIP] Skipping permission checks ^(--skip-permission-check flag^)
+    echo.
+) else (
+    echo [INFO] Checking Snowflake role privileges...
 
-REM Check if user can use SYSADMIN
-snow sql -q "USE ROLE SYSADMIN; SELECT 'YES';" >nul 2>nul
-if %ERRORLEVEL% neq 0 (
-    echo.
-    echo ================================================================
-    echo                    [ERROR] PERMISSION ERROR
-    echo ================================================================
-    echo.
-    echo Your current user does not have access to the SYSADMIN role.
-    echo.
-    echo The deployment requires SYSADMIN privileges to:
-    echo    - Create databases and schemas
-    echo    - Grant object privileges
-    echo    - Deploy stored procedures
-    echo.
-    echo Please contact your Snowflake administrator to grant SYSADMIN access,
-    echo or run this deployment with a user that has the required privileges.
-    echo.
-    exit /b 1
-)
-echo    [OK] SYSADMIN access confirmed
-
-REM Check if user can use SECURITYADMIN (only required if CREATE_ROLES=true)
-if "%DEFAULT_CREATE_ROLES%"=="true" (
-    snow sql -q "USE ROLE SECURITYADMIN; SELECT 'YES';" >nul 2>nul
+    REM Check if user can use SYSADMIN
+    snow sql -q "USE ROLE SYSADMIN; SELECT 'YES';" >nul 2>nul
     if !ERRORLEVEL! neq 0 (
         echo.
         echo ================================================================
         echo                    [ERROR] PERMISSION ERROR
         echo ================================================================
         echo.
-        echo Your current user does not have access to the SECURITYADMIN role.
+        echo Your current user does not have access to the SYSADMIN role.
         echo.
-        echo The deployment requires SECURITYADMIN privileges to:
-        echo    - Create database access roles
-        echo    - Establish role hierarchy
-        echo    - Grant roles to users
+        echo The deployment requires SYSADMIN privileges to:
+        echo    - Create databases and schemas
+        echo    - Grant object privileges
+        echo    - Deploy stored procedures
         echo.
-        echo Options:
-        echo    1. Contact your Snowflake administrator to grant SECURITYADMIN access
-        echo    2. Set CREATE_ROLES="false" in deploy.config to skip role creation
+        echo Please contact your Snowflake administrator to grant SYSADMIN access,
+        echo or run this deployment with a user that has the required privileges.
+        echo.
+        echo [TIP] Use --skip-permission-check to bypass this check
         echo.
         exit /b 1
     )
-    echo    [OK] SECURITYADMIN access confirmed
-) else (
-    echo    [SKIP] SECURITYADMIN check skipped ^(CREATE_ROLES=false^)
+    echo    [OK] SYSADMIN access confirmed
+
+    REM Check if user can use SECURITYADMIN (only required if CREATE_ROLES=true)
+    if "!DEFAULT_CREATE_ROLES!"=="true" (
+        snow sql -q "USE ROLE SECURITYADMIN; SELECT 'YES';" >nul 2>nul
+        if !ERRORLEVEL! neq 0 (
+            echo.
+            echo ================================================================
+            echo                    [ERROR] PERMISSION ERROR
+            echo ================================================================
+            echo.
+            echo Your current user does not have access to the SECURITYADMIN role.
+            echo.
+            echo The deployment requires SECURITYADMIN privileges to:
+            echo    - Create database access roles
+            echo    - Establish role hierarchy
+            echo    - Grant roles to users
+            echo.
+            echo Options:
+            echo    1. Contact your Snowflake administrator to grant SECURITYADMIN access
+            echo    2. Set CREATE_ROLES="false" in deploy.config to skip role creation
+            echo    3. Use --skip-permission-check to bypass this check
+            echo.
+            exit /b 1
+        )
+        echo    [OK] SECURITYADMIN access confirmed
+    ) else (
+        echo    [SKIP] SECURITYADMIN check skipped ^(CREATE_ROLES=false^)
+    )
+    echo.
 )
-echo.
 
 REM Configuration prompt
 echo [CONFIG] Configuration ^(from deploy.config^):
@@ -380,7 +394,9 @@ echo.
 echo [TIPS]
 echo    - Edit deploy.config to change default values
 echo    - Run with --defaults or -y flag to skip prompts
+echo    - Run with --skip-permission-check to bypass role checks
 echo.
 
 endlocal
+
 
