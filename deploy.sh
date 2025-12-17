@@ -377,12 +377,13 @@ if [ ! -f "$SQL_FILE" ]; then
     exit 1
 fi
 
-# Read the SQL file and replace the procedure name with fully qualified name
-SQL_CONTENT=$(cat "$SQL_FILE")
-# Replace "CREATE OR REPLACE PROCEDURE field_matcher_advanced" with fully qualified name
-SQL_CONTENT=$(echo "$SQL_CONTENT" | sed "s/CREATE OR REPLACE PROCEDURE field_matcher_advanced/CREATE OR REPLACE PROCEDURE ${DATABASE}.${SCHEMA}.field_matcher_advanced/")
+# Create temp file with the procedure SQL (using file avoids $ interpretation issues in Git Bash)
+TEMP_PROC_FILE=$(mktemp)
+# Replace the procedure name with fully qualified name and write to temp file
+sed "s/CREATE OR REPLACE PROCEDURE field_matcher_advanced/CREATE OR REPLACE PROCEDURE ${DATABASE}.${SCHEMA}.field_matcher_advanced/" "$SQL_FILE" > "$TEMP_PROC_FILE"
 
-snow sql -q "$SQL_CONTENT" || true
+snow sql -f "$TEMP_PROC_FILE" || true
+rm -f "$TEMP_PROC_FILE"
 echo "✓ Stored procedure deployed from mapping_proc.sql"
 echo ""
 
